@@ -1,0 +1,163 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag/version label to use for artifacts when running manually (e.g. v0.1.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag
+        id: vars
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          # Sanitize for filenames.
+          SAFE_TAG="${TAG//\//-}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "safe_tag=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain versions
+        run: |
+          set -euo pipefail
+          swift --version
+          xcodebuild -version
+
+      - name: Install swift-format (lint tool)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          set -euo pipefail
+          brew install swift-format
+
+      - name: Lint (swift-format, strict)
+        run: |
+          set -euo pipefail
+          swift-format lint --recursive --strict Carla/Sources Carla/Tests
+
+      - name: Swift Package tests
+        run: |
+          set -euo pipefail
+          cd Carla
+          swift test
+
+      - name: Import Apple code signing certificate
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+          p12-password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+
+      - name: Build app (Release)
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${APPLE_DEVELOPER_ID}" ]]; then
+            echo "Missing signing secret: APPLE_DEVELOPER_ID" >&2
+            exit 1
+          fi
+
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
+          EXTRA_ARGS=()
+          if [[ -n "${APPLE_TEAM_ID}" ]]; then
+            EXTRA_ARGS+=("DEVELOPMENT_TEAM=$APPLE_TEAM_ID")
+          fi
+
+          xcodebuild \
+            -project Carla/Carla.xcodeproj \
+            -scheme Carla \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID" \
+            "${EXTRA_ARGS[@]}" \
+            build
+
+          APP_PATH="$DERIVED_DATA/Build/Products/Release/Carla.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "Expected app not found at: $APP_PATH" >&2
+            find "$DERIVED_DATA/Build/Products" -maxdepth 3 -name '*.app' -print
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Verify code signature
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl -a -vv "$APP_PATH" || true
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          STAGING="$RUNNER_TEMP/dmg-staging"
+          mkdir -p "$STAGING"
+
+          cp -R "$APP_PATH" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+
+          DMG_NAME="Carla-${{ steps.vars.outputs.safe_tag }}.dmg"
+          DMG_PATH="$RUNNER_TEMP/$DMG_NAME"
+
+          hdiutil create \
+            -volname "Carla" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+          # Convenience alias for updaters that want a stable filename.
+          cp "$DMG_PATH" "$RUNNER_TEMP/Carla-latest.dmg"
+
+          shasum -a 256 "$DMG_PATH" | awk '{print $1}' > "$RUNNER_TEMP/$DMG_NAME.sha256"
+          shasum -a 256 "$RUNNER_TEMP/Carla-latest.dmg" | awk '{print $1}' > "$RUNNER_TEMP/Carla-latest.dmg.sha256"
+
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: carla-dmg-${{ steps.vars.outputs.safe_tag }}
+          path: |
+            ${{ env.DMG_PATH }}
+            ${{ env.DMG_PATH }}.sha256
+            ${{ runner.temp }}/Carla-latest.dmg
+            ${{ runner.temp }}/Carla-latest.dmg.sha256
+
+      - name: Attach DMG to GitHub Release
+        if: ${{ github.event_name == 'release' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.DMG_PATH }}
+            ${{ env.DMG_PATH }}.sha256
+            ${{ runner.temp }}/Carla-latest.dmg
+            ${{ runner.temp }}/Carla-latest.dmg.sha256

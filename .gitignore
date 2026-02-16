@@ -1,0 +1,26 @@
+# Build artifacts
+Carla/build/
+Carla/.build/
+DerivedData/
+
+# Xcode user data
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# SPM checkouts
+.swiftpm/
+
+# Xcode SPM resolution files / workspaces (generated; SwiftPM uses Carla/Package.resolved)
+Carla/Carla.xcodeproj/project.xcworkspace/
+
+# IDE
+.idea/
+*.swp
+
+# Agent runtime artifacts
+.pi/
+.agent-logs/

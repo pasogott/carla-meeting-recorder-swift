@@ -1,0 +1,24 @@
+{
+  "originHash" : "e88f20050ce34e7ab5626fdcfe8a9405175c95726ef659ab6e9f4bd196a61463",
+  "pins" : [
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift.git",
+      "state" : {
+        "revision" : "aa0079aeb82a4bf00324561a40bffe68c6fe1c26",
+        "version" : "7.9.0"
+      }
+    },
+    {
+      "identity" : "whisper.spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ggerganov/whisper.spm.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "a2085436c2eb796af90956b62bd64731f5e5b823"
+      }
+    }
+  ],
+  "version" : 3
+}
