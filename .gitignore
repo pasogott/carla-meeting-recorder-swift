@@ -21,6 +21,10 @@ Carla/Carla.xcodeproj/project.xcworkspace/
 .idea/
 *.swp
 
+# Signing material (never commit)
+*.p12
+*.pfx
+
 # Agent runtime artifacts
 .pi/
 .agent-logs/
