@@ -76,33 +76,20 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
 
-      - name: Build app (Release)
-        env:
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build app (Release, unsigned)
         run: |
           set -euo pipefail
 
-          if [[ -z "${APPLE_DEVELOPER_ID}" ]]; then
-            echo "Missing signing secret: APPLE_DEVELOPER_ID" >&2
-            exit 1
-          fi
-
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
-          EXTRA_ARGS=()
-          if [[ -n "${APPLE_TEAM_ID}" ]]; then
-            EXTRA_ARGS+=("DEVELOPMENT_TEAM=$APPLE_TEAM_ID")
-          fi
-
           xcodebuild \
             -project Carla/Carla.xcodeproj \
             -scheme Carla \
             -configuration Release \
             -destination 'platform=macOS' \
             -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID" \
-            "${EXTRA_ARGS[@]}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             build
 
           APP_PATH="$DERIVED_DATA/Build/Products/Release/Carla.app"
@@ -114,10 +101,25 @@ jobs:
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
+      - name: Sign app bundle (Developer ID)
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${APPLE_DEVELOPER_ID}" ]]; then
+            echo "Missing signing secret: APPLE_DEVELOPER_ID" >&2
+            exit 1
+          fi
+
+          # Sign nested content and apply hardened runtime on the app bundle.
+          codesign --force --deep --timestamp --options runtime --sign "$APPLE_DEVELOPER_ID" "$APP_PATH"
+
       - name: Verify code signature
         run: |
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dv --verbose=4 "$APP_PATH" || true
           spctl -a -vv "$APP_PATH" || true
 
       - name: Create DMG
