@@ -6,44 +6,30 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag/version label to use for artifacts when running manually (e.g. v0.1.0)"
+        description: "Tag/version label to use for artifacts when running manually (e.g. carla-2026.02.17-00)"
         required: false
         type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-dmg:
+  ci:
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
-
-      - name: Determine tag
-        id: vars
-        run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            TAG="${{ github.event.release.tag_name }}"
-          elif [[ -n "${{ inputs.tag }}" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
-          # Sanitize for filenames.
-          SAFE_TAG="${TAG//\//-}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "safe_tag=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Toolchain versions
         run: |
@@ -70,11 +56,80 @@ jobs:
           cd Carla
           swift test
 
+      - name: Xcode build (Debug)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Carla/Carla.xcodeproj \
+            -scheme Carla \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            build
+
+  build-dmg:
+    needs: ci
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Determine tag
+        id: vars
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          SAFE_TAG="${TAG//\//-}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "safe_tag=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Import Apple code signing certificate
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+
+      - name: Resolve signing identity
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+        run: |
+          set -euo pipefail
+
+          REQUESTED_IDENTITY="${APPLE_DEVELOPER_ID:-}"
+          RESOLVED_IDENTITY=""
+
+          if [[ -n "$REQUESTED_IDENTITY" ]] && security find-identity -v -p codesigning | grep -F "\"$REQUESTED_IDENTITY\"" >/dev/null; then
+            RESOLVED_IDENTITY="$REQUESTED_IDENTITY"
+          fi
+
+          if [[ -z "$RESOLVED_IDENTITY" ]]; then
+            RESOLVED_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
+          fi
+
+          if [[ -z "$RESOLVED_IDENTITY" ]]; then
+            echo "No Developer ID Application identity found after certificate import." >&2
+            echo "Available code signing identities:" >&2
+            security find-identity -v -p codesigning || true
+            echo "Expected: Developer ID Application: ..." >&2
+            exit 1
+          fi
+
+          echo "Using signing identity: $RESOLVED_IDENTITY"
+          echo "SIGNING_IDENTITY=$RESOLVED_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Build app (Release, unsigned)
         run: |
@@ -101,38 +156,9 @@ jobs:
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-      - name: Resolve signing identity
-        env:
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          set -euo pipefail
-
-          REQUESTED_IDENTITY="${APPLE_DEVELOPER_ID:-}"
-          RESOLVED_IDENTITY=""
-
-          if [[ -n "$REQUESTED_IDENTITY" ]] && security find-identity -v -p codesigning | grep -F "\"$REQUESTED_IDENTITY\"" >/dev/null; then
-            RESOLVED_IDENTITY="$REQUESTED_IDENTITY"
-          fi
-
-          if [[ -z "$RESOLVED_IDENTITY" ]]; then
-            RESOLVED_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
-          fi
-
-          if [[ -z "$RESOLVED_IDENTITY" ]]; then
-            echo "No Developer ID Application identity found after certificate import." >&2
-            echo "Available code signing identities:" >&2
-            security find-identity -v -p codesigning || true
-            exit 1
-          fi
-
-          echo "Using signing identity: $RESOLVED_IDENTITY"
-          echo "SIGNING_IDENTITY=$RESOLVED_IDENTITY" >> "$GITHUB_ENV"
-
       - name: Sign app bundle (Developer ID)
         run: |
           set -euo pipefail
-
-          # Sign nested content and apply hardened runtime on the app bundle.
           codesign --force --deep --timestamp --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
 
       - name: Verify code signature
@@ -161,7 +187,6 @@ jobs:
             -format UDZO \
             "$DMG_PATH"
 
-          # Convenience alias for updaters that want a stable filename.
           cp "$DMG_PATH" "$RUNNER_TEMP/Carla-latest.dmg"
 
           shasum -a 256 "$DMG_PATH" | awk '{print $1}' > "$RUNNER_TEMP/$DMG_NAME.sha256"
