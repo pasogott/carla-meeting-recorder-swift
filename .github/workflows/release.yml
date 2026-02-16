@@ -101,19 +101,39 @@ jobs:
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-      - name: Sign app bundle (Developer ID)
+      - name: Resolve signing identity
         env:
           APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${APPLE_DEVELOPER_ID}" ]]; then
-            echo "Missing signing secret: APPLE_DEVELOPER_ID" >&2
+          REQUESTED_IDENTITY="${APPLE_DEVELOPER_ID:-}"
+          RESOLVED_IDENTITY=""
+
+          if [[ -n "$REQUESTED_IDENTITY" ]] && security find-identity -v -p codesigning | grep -F "\"$REQUESTED_IDENTITY\"" >/dev/null; then
+            RESOLVED_IDENTITY="$REQUESTED_IDENTITY"
+          fi
+
+          if [[ -z "$RESOLVED_IDENTITY" ]]; then
+            RESOLVED_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
+          fi
+
+          if [[ -z "$RESOLVED_IDENTITY" ]]; then
+            echo "No Developer ID Application identity found after certificate import." >&2
+            echo "Available code signing identities:" >&2
+            security find-identity -v -p codesigning || true
             exit 1
           fi
 
+          echo "Using signing identity: $RESOLVED_IDENTITY"
+          echo "SIGNING_IDENTITY=$RESOLVED_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign app bundle (Developer ID)
+        run: |
+          set -euo pipefail
+
           # Sign nested content and apply hardened runtime on the app bundle.
-          codesign --force --deep --timestamp --options runtime --sign "$APPLE_DEVELOPER_ID" "$APP_PATH"
+          codesign --force --deep --timestamp --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
 
       - name: Verify code signature
         run: |
@@ -131,7 +151,7 @@ jobs:
           cp -R "$APP_PATH" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
 
-          DMG_NAME="Carla-${{ steps.vars.outputs.safe_tag }}.dmg"
+          DMG_NAME="${{ steps.vars.outputs.safe_tag }}.dmg"
           DMG_PATH="$RUNNER_TEMP/$DMG_NAME"
 
           hdiutil create \
