@@ -32,8 +32,9 @@
 
 ### Security / signing
 - [ ] Confirm release secrets are set in GitHub Actions:
-  - [ ] `APPLE_DEVELOPER_ID_CERT`
+  - [ ] `APPLE_DEVELOPER_ID_CERT` (base64 `.p12` preferred; `.cer` also supported)
   - [ ] `APPLE_DEVELOPER_ID_PASSWORD`
+  - [ ] `APPLE_DEVELOPER_ID_PRIVATE_KEY` (required when cert secret is `.cer`)
   - [ ] `APPLE_DEVELOPER_ID`
   - [ ] `APPLE_TEAM_ID` (optional)
 - [ ] Validate signed release on a clean macOS machine
