@@ -43,6 +43,7 @@ struct SettingsView: View {
 
       Section("App") {
         Toggle("Launch at login", isOn: $draft.launchAtLogin)
+        Toggle("Show Notch Overlay while recording", isOn: $draft.showNotchOverlay)
         Text("Launch-at-login toggle is currently a UI placeholder.")
           .font(.caption)
           .foregroundStyle(.secondary)

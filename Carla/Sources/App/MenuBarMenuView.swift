@@ -7,7 +7,6 @@ struct MenuBarMenuView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      // Recording status header
       HStack {
         Label(
           appState.recordingState == .recording ? "Recording" : "Idle",
@@ -23,63 +22,77 @@ struct MenuBarMenuView: View {
         }
       }
 
-      // Audio level meters (visible only when recording)
       if appState.recordingState == .recording {
         DualAudioLevelMetersView(
           microphoneLevel: appState.microphoneLevel,
           systemAudioLevel: appState.systemAudioLevel,
           segmented: true
         )
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
       }
 
       Button(appState.recordingState == .recording ? "Stop Recording" : "Start Recording") {
         appState.toggleRecording()
       }
+      .buttonStyle(.borderedProminent)
+      .controlSize(.small)
 
       Divider()
 
-      Button("View Meetings") {
-        openWindow(id: WindowID.meetings)
-        openWindow(id: WindowID.transcript)
+      menuAction("View Meetings", systemImage: "list.bullet.rectangle") {
+        openAppWindow(WindowID.meetings)
+        openAppWindow(WindowID.transcript)
       }
 
-      Button("Open Transcript Viewer") {
-        openWindow(id: WindowID.transcript)
+      menuAction("Open Transcript Viewer", systemImage: "text.bubble") {
+        openAppWindow(WindowID.transcript)
       }
 
-      Button("Settings") {
-        openWindow(id: WindowID.settings)
+      menuAction("Settings", systemImage: "gearshape") {
+        openAppWindow(WindowID.settings)
       }
 
-      Button("Check for Updates…") {
+      menuAction("Check for Updates…", systemImage: "arrow.triangle.2.circlepath") {
         appState.checkForUpdates()
       }
       .disabled(!appState.canCheckForUpdates)
 
       if appState.showOnboarding {
-        Button("Finish Onboarding") {
-          openWindow(id: WindowID.onboarding)
+        menuAction("Finish Onboarding", systemImage: "sparkles") {
+          openAppWindow(WindowID.onboarding)
         }
       }
 
       Divider()
 
-      Button("Quit Carla") {
+      menuAction("Quit Carla", systemImage: "power") {
         NSApp.terminate(nil)
       }
       .keyboardShortcut("q")
     }
     .padding(12)
-    .frame(minWidth: 240)
+    .frame(minWidth: 260)
     .onAppear {
-      if appState.showOnboarding {
-        openWindow(id: WindowID.onboarding)
+      if appState.consumeShouldAutoOpenOnboardingWindow() {
+        openAppWindow(WindowID.onboarding)
       }
     }
   }
 
-  // MARK: - Helpers
+  private func menuAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Label(title, systemImage: systemImage)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func openAppWindow(_ id: String) {
+    NSApp.activate(ignoringOtherApps: true)
+    openWindow(id: id)
+  }
 
   private func formatDuration(_ duration: TimeInterval) -> String {
     let hours = Int(duration) / 3600
@@ -88,8 +101,7 @@ struct MenuBarMenuView: View {
 
     if hours > 0 {
       return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-    } else {
-      return String(format: "%d:%02d", minutes, seconds)
     }
+    return String(format: "%d:%02d", minutes, seconds)
   }
 }
