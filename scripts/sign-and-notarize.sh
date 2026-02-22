@@ -28,11 +28,7 @@ mapfile_data=$(get_version_and_build)
 VERSION=$(printf '%s\n' "$mapfile_data" | sed -n '1p')
 BUILD=$(printf '%s\n' "$mapfile_data" | sed -n '2p')
 
-KEYCHAIN_PATH="$RUNNER_TEMP"
-if [[ -z "${KEYCHAIN_PATH:-}" ]]; then
-  KEYCHAIN_PATH="/tmp"
-fi
-KEYCHAIN_PATH="$KEYCHAIN_PATH/carla-release.keychain-db"
+KEYCHAIN_PATH="${RUNNER_TEMP:-/tmp}/carla-release.keychain-db"
 KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
