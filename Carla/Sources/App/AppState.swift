@@ -6,7 +6,7 @@ import Combine
 import Foundation
 import SwiftUI
 #if canImport(Sparkle)
-import Sparkle
+  import Sparkle
 #endif
 
 // MARK: - Recording State
@@ -185,7 +185,7 @@ final class AppState: ObservableObject {
   private var coordinatorLevelsTask: Task<Void, Never>?
 
   #if canImport(Sparkle)
-  private var updaterController: SPUStandardUpdaterController?
+    private var updaterController: SPUStandardUpdaterController?
   #endif
 
   // MARK: - Initialization
@@ -648,15 +648,15 @@ final class AppState: ObservableObject {
 
   var canCheckForUpdates: Bool {
     #if canImport(Sparkle)
-    return updaterController != nil
+      return updaterController != nil
     #else
-    return false
+      return false
     #endif
   }
 
   func checkForUpdates() {
     #if canImport(Sparkle)
-    updaterController?.checkForUpdates(nil)
+      updaterController?.checkForUpdates(nil)
     #endif
   }
 
@@ -664,19 +664,19 @@ final class AppState: ObservableObject {
 
   private func setupUpdater() {
     #if canImport(Sparkle)
-    guard
-      let feedURLString = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
-      URL(string: feedURLString) != nil,
-      !feedURLString.isEmpty
-    else {
-      return
-    }
+      guard
+        let feedURLString = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+        URL(string: feedURLString) != nil,
+        !feedURLString.isEmpty
+      else {
+        return
+      }
 
-    updaterController = SPUStandardUpdaterController(
-      startingUpdater: true,
-      updaterDelegate: nil,
-      userDriverDelegate: nil
-    )
+      updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+      )
     #endif
   }
 
