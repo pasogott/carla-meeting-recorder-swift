@@ -119,7 +119,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           security default-keychain -d user -s "$KEYCHAIN_PATH"
 
-          CERT_FILE="$RUNNER_TEMP/signing-cert.bin"
+          CERT_FILE="$RUNNER_TEMP/signing-cert.p12"
           printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
 
           PKCS12_OUTPUT=$(openssl pkcs12 -in "$CERT_FILE" -passin pass:"${APPLE_DEVELOPER_ID_PASSWORD:-}" -noout 2>&1 || true)

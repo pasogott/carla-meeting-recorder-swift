@@ -6,6 +6,9 @@ set -euo pipefail
 
 OUT_FILE="${1:-.release-secrets.env}"
 SPARKLE_ACCOUNT="${SPARKLE_ACCOUNT:-carla}"
+APP_STORE_CONNECT_API_KEY_P8_VALUE="${APP_STORE_CONNECT_API_KEY_P8:-}"
+APP_STORE_CONNECT_KEY_ID_VALUE="${APP_STORE_CONNECT_KEY_ID:-}"
+APP_STORE_CONNECT_ISSUER_ID_VALUE="${APP_STORE_CONNECT_ISSUER_ID:-}"
 
 require_bin() {
   for b in "$@"; do
@@ -125,6 +128,27 @@ else
   echo "Warning: Sparkle generate_keys not found. Sparkle keys left empty." >&2
 fi
 
+if [[ -z "$APP_STORE_CONNECT_API_KEY_P8_VALUE" || -z "$APP_STORE_CONNECT_KEY_ID_VALUE" || -z "$APP_STORE_CONNECT_ISSUER_ID_VALUE" ]]; then
+  echo "Optional notarization credentials (App Store Connect API)"
+  read -r -p "APP_STORE_CONNECT_KEY_ID (optional): " input_key_id
+  read -r -p "APP_STORE_CONNECT_ISSUER_ID (optional): " input_issuer_id
+  read -r -p "Path to API key .p8 file (optional): " input_p8_path
+
+  if [[ -n "$input_key_id" ]]; then
+    APP_STORE_CONNECT_KEY_ID_VALUE="$input_key_id"
+  fi
+  if [[ -n "$input_issuer_id" ]]; then
+    APP_STORE_CONNECT_ISSUER_ID_VALUE="$input_issuer_id"
+  fi
+  if [[ -n "$input_p8_path" ]]; then
+    if [[ ! -f "$input_p8_path" ]]; then
+      echo "Warning: p8 file not found at $input_p8_path (leaving APP_STORE_CONNECT_API_KEY_P8 empty)." >&2
+    else
+      APP_STORE_CONNECT_API_KEY_P8_VALUE="$(awk '{printf "%s\\n", $0}' "$input_p8_path" | sed '$s/\\n$//')"
+    fi
+  fi
+fi
+
 {
   echo "# Generated on $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "# DO NOT COMMIT"
@@ -135,6 +159,9 @@ fi
   write_env_line APPLE_DEVELOPER_ID_PRIVATE_KEY ""
   write_env_line SPARKLE_PUBLIC_ED_KEY "$SPARKLE_PUBLIC"
   write_env_line SPARKLE_PRIVATE_ED_KEY "$SPARKLE_PRIVATE"
+  write_env_line APP_STORE_CONNECT_API_KEY_P8 "$APP_STORE_CONNECT_API_KEY_P8_VALUE"
+  write_env_line APP_STORE_CONNECT_KEY_ID "$APP_STORE_CONNECT_KEY_ID_VALUE"
+  write_env_line APP_STORE_CONNECT_ISSUER_ID "$APP_STORE_CONNECT_ISSUER_ID_VALUE"
 } > "$OUT_FILE"
 
 chmod 600 "$OUT_FILE"
