@@ -289,26 +289,31 @@ jobs:
           ZIP_URL="https://github.com/$REPO/releases/download/$TAG/$ZIP_NAME"
           APPCAST_PATH="$RUNNER_TEMP/appcast.xml"
 
-          cat > "$APPCAST_PATH" <<EOF
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Carla Updates</title>
-    <item>
-      <title>Version $APP_VERSION</title>
-      <pubDate>$PUB_DATE</pubDate>
-      <sparkle:version>$APP_BUILD</sparkle:version>
-      <sparkle:shortVersionString>$APP_VERSION</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure
-        url="$ZIP_URL"
-        type="application/octet-stream"
-        length="$ZIP_LENGTH"
-        sparkle:edSignature="$SPARKLE_SIG"/>
-    </item>
-  </channel>
-</rss>
-EOF
+          APP_VERSION="$APP_VERSION" APP_BUILD="$APP_BUILD" ZIP_URL="$ZIP_URL" ZIP_LENGTH="$ZIP_LENGTH" SPARKLE_SIG="$SPARKLE_SIG" PUB_DATE="$PUB_DATE" APPCAST_PATH="$APPCAST_PATH" python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          appcast = f'''<?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Carla Updates</title>
+              <item>
+                <title>Version {os.environ["APP_VERSION"]}</title>
+                <pubDate>{os.environ["PUB_DATE"]}</pubDate>
+                <sparkle:version>{os.environ["APP_BUILD"]}</sparkle:version>
+                <sparkle:shortVersionString>{os.environ["APP_VERSION"]}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="{os.environ["ZIP_URL"]}"
+                  type="application/octet-stream"
+                  length="{os.environ["ZIP_LENGTH"]}"
+                  sparkle:edSignature="{os.environ["SPARKLE_SIG"]}"/>
+              </item>
+            </channel>
+          </rss>
+          '''
+          Path(os.environ["APPCAST_PATH"]).write_text(appcast)
+          PY
 
           shasum -a 256 "$ZIP_PATH" | awk '{print $1}' > "$ZIP_PATH.sha256"
           shasum -a 256 "$APPCAST_PATH" | awk '{print $1}' > "$APPCAST_PATH.sha256"
