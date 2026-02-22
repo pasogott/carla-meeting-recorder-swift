@@ -211,7 +211,10 @@ public final class WAVMeetingRecorder: @unchecked Sendable {
   private func drainStereoBlocks(final: Bool) {
     guard let stereoFile else { return }
 
-    while max(microphoneFIFO.count, systemFIFO.count) >= stereoBlockFrames {
+    // Keep channels aligned by writing regular blocks only when BOTH streams have data.
+    // Using max(...) here can over-pad one side repeatedly during callback jitter,
+    // which inflates total duration and sounds choppy.
+    while min(microphoneFIFO.count, systemFIFO.count) >= stereoBlockFrames {
       let left = microphoneFIFO.take(count: stereoBlockFrames)
       let right = systemFIFO.take(count: stereoBlockFrames)
       writeStereoSamples(left: left, right: right, to: stereoFile)

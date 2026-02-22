@@ -55,8 +55,8 @@ public final class AudioPlaybackService: NSObject, ObservableObject {
   /// - Parameter filePath: Path to the M4A or WAV audio file
   /// - Throws: `AudioPlaybackError` if the file cannot be loaded
   public func loadAudio(filePath: String) throws {
-    // Stop any current playback
-    stop()
+    // Fully unload current playback state before loading a new file.
+    unload()
 
     let fileURL = URL(fileURLWithPath: filePath)
     let fileManager = FileManager.default
@@ -87,8 +87,22 @@ public final class AudioPlaybackService: NSObject, ObservableObject {
   /// Start or resume playback.
   public func play() {
     guard let player = audioPlayer else { return }
-    player.play()
+
+    guard player.play() else {
+      isPlaying = false
+      stopUpdateTimer()
+      lastError = .failedToLoad(
+        NSError(
+          domain: "AudioPlaybackService",
+          code: -1,
+          userInfo: [NSLocalizedDescriptionKey: "Playback failed to start."]
+        )
+      )
+      return
+    }
+
     isPlaying = true
+    lastError = nil
     startUpdateTimer()
   }
 
@@ -169,22 +183,63 @@ public final class AudioPlaybackService: NSObject, ObservableObject {
 
 extension AudioPlaybackService: AVAudioPlayerDelegate {
   nonisolated public func audioPlayerDidFinishPlaying(
-    _ player: AVAudioPlayer, successfully flag: Bool
+    _ player: AVAudioPlayer,
+    successfully flag: Bool
   ) {
+    let finishedPlayerID = ObjectIdentifier(player)
     Task { @MainActor in
+      guard let currentPlayer = audioPlayer,
+        ObjectIdentifier(currentPlayer) == finishedPlayerID
+      else {
+        return
+      }
+
+      if flag {
+        lastError = nil
+      } else {
+        lastError = .failedToLoad(
+          NSError(
+            domain: "AudioPlaybackService",
+            code: -2,
+            userInfo: [NSLocalizedDescriptionKey: "Playback stopped unexpectedly."]
+          )
+        )
+      }
+
+      currentPlayer.currentTime = 0
       isPlaying = false
       currentTime = 0
       stopUpdateTimer()
     }
   }
 
-  nonisolated public func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+  nonisolated public func audioPlayerDecodeErrorDidOccur(
+    _ player: AVAudioPlayer,
+    error: Error?
+  ) {
+    let failedPlayerID = ObjectIdentifier(player)
     Task { @MainActor in
+      guard let currentPlayer = audioPlayer,
+        ObjectIdentifier(currentPlayer) == failedPlayerID
+      else {
+        return
+      }
+
       isPlaying = false
       stopUpdateTimer()
       if let error {
         lastError = .failedToLoad(error)
+      } else {
+        lastError = .failedToLoad(
+          NSError(
+            domain: "AudioPlaybackService",
+            code: -3,
+            userInfo: [NSLocalizedDescriptionKey: "Audio decoding failed."]
+          )
+        )
       }
+      currentPlayer.currentTime = 0
+      currentTime = 0
     }
   }
 }

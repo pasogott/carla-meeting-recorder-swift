@@ -4,7 +4,6 @@ import CarlaStorage
 import CarlaTranscription
 import Combine
 import Foundation
-import SwiftUI
 #if canImport(Sparkle)
   import Sparkle
 #endif
@@ -54,6 +53,7 @@ struct AppSettings: Equatable {
   var selectedModel: String
   var storagePath: String
   var launchAtLogin: Bool
+  var showNotchOverlay: Bool
   var primaryLanguage: String
 
   static let `default` = AppSettings(
@@ -62,6 +62,7 @@ struct AppSettings: Equatable {
     selectedModel: "base",
     storagePath: "~/Library/Application Support/Carla",
     launchAtLogin: false,
+    showNotchOverlay: false,
     primaryLanguage: "en"
   )
 }
@@ -91,8 +92,7 @@ struct ModelDownloadState: Equatable {
   var errorMessage: String? = nil
 
   var isDownloading: Bool {
-    if case .downloading = status { return true }
-    return false
+    status == .downloading
   }
 
   var isComplete: Bool {
@@ -117,8 +117,6 @@ struct DeleteConfirmationState: Identifiable, Equatable {
   let meetingID: UUID
   let confirmationID: UUID
   let meetingTitle: String
-  let audioFilePath: String
-  var deleteAudioFile: Bool = true
 }
 
 // MARK: - AppState
@@ -157,7 +155,6 @@ final class AppState: ObservableObject {
   // MARK: - Delete Confirmation
 
   @Published var deleteConfirmation: DeleteConfirmationState?
-  @Published var isDeleting: Bool = false
 
   // MARK: - Playback State
 
@@ -180,9 +177,11 @@ final class AppState: ObservableObject {
   private var cancellables = Set<AnyCancellable>()
   private var durationTimer: Timer?
   private var downloadTask: Task<Void, Never>?
+  private var downloadOperationID: UUID?
 
   private var coordinatorSegmentsTask: Task<Void, Never>?
   private var coordinatorLevelsTask: Task<Void, Never>?
+  private var didAutoOpenOnboardingWindow = false
 
   #if canImport(Sparkle)
     private var updaterController: SPUStandardUpdaterController?
@@ -250,6 +249,11 @@ final class AppState: ObservableObject {
 
     // Subscribe to search query changes for FTS5 search
     setupSearchSubscription()
+
+    // Forward permission updates so AppState-driven views refresh.
+    self.permissionManager.objectWillChange
+      .sink { [weak self] _ in self?.objectWillChange.send() }
+      .store(in: &cancellables)
   }
 
   // MARK: - Computed Properties
@@ -265,19 +269,9 @@ final class AppState: ObservableObject {
     }
   }
 
-  var menuBarIconColor: Color {
-    switch recordingState {
-    case .recording:
-      return .red
-    case .starting, .stopping:
-      return .orange
-    case .idle:
-      return .primary
-    }
-  }
-
   var filteredMeetings: [MeetingUI] {
-    guard !searchQuery.isEmpty else {
+    let normalizedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedQuery.isEmpty else {
       return meetings
     }
 
@@ -288,7 +282,7 @@ final class AppState: ObservableObject {
 
     // Fallback to local filtering for title matches
     return meetings.filter {
-      $0.title.localizedCaseInsensitiveContains(searchQuery)
+      $0.title.localizedCaseInsensitiveContains(normalizedQuery)
     }
   }
 
@@ -301,10 +295,6 @@ final class AppState: ObservableObject {
     onboarding.legalAccepted
       && onboarding.modelsReady
       && permissionManager.allPermissionsGranted
-  }
-
-  var isRecordingActive: Bool {
-    recordingState == .recording
   }
 
   // MARK: - Recording Actions
@@ -385,11 +375,18 @@ final class AppState: ObservableObject {
 
     if modelsAvailable {
       modelDownload.status = .completed
+      modelDownload.currentModel = nil
+      modelDownload.progress = 1
       modelDownload.progressText = "Models ready"
+      modelDownload.errorMessage = nil
       onboarding.modelsReady = true
     } else {
       modelDownload.status = .idle
+      modelDownload.currentModel = nil
+      modelDownload.progress = 0
       modelDownload.progressText = ""
+      modelDownload.errorMessage = nil
+      onboarding.modelsReady = false
     }
   }
 
@@ -398,68 +395,80 @@ final class AppState: ObservableObject {
     // Cancel any existing download
     downloadTask?.cancel()
 
+    let operationID = UUID()
+    downloadOperationID = operationID
+
     modelDownload.status = .downloading
+    modelDownload.currentModel = nil
     modelDownload.progress = 0
+    modelDownload.progressText = ""
     modelDownload.errorMessage = nil
+    onboarding.modelsReady = false
 
     downloadTask = Task {
       let stream = await whisperModelManager.downloadRequiredModels()
       for await progress in stream {
-        // Check for cancellation
+        // Check for cancellation or superseded operation
         if Task.isCancelled { break }
+        let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
+        if !isCurrentOperation { return }
 
-        await MainActor.run {
-          modelDownload.currentModel = progress.model
-          modelDownload.progress = progress.fractionComplete
-          modelDownload.progressText = progress.formattedProgress
-
-          if let error = progress.error {
+        if let error = progress.error {
+          await MainActor.run {
+            guard self.downloadOperationID == operationID else { return }
             modelDownload.status = .failed
             modelDownload.errorMessage = error
             modelDownload.progressText = "Download failed"
-          } else if progress.isComplete {
-            // Model downloaded successfully, continue to next or finish
+            onboarding.modelsReady = false
           }
+          return
+        }
+
+        await MainActor.run {
+          guard self.downloadOperationID == operationID else { return }
+          modelDownload.currentModel = progress.model
+          modelDownload.progress = progress.fractionComplete
+          modelDownload.progressText = progress.formattedProgress
         }
       }
 
       // Check final status after all downloads
       if !Task.isCancelled {
+        let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
+        guard isCurrentOperation else { return }
+
         let allReady = await whisperModelManager.areRequiredModelsAvailable()
         await MainActor.run {
+          guard self.downloadOperationID == operationID else { return }
           if allReady {
             modelDownload.status = .completed
+            modelDownload.progress = 1
             modelDownload.progressText = "Models ready"
             modelDownload.currentModel = nil
             onboarding.modelsReady = true
           } else if modelDownload.errorMessage == nil {
             modelDownload.status = .failed
             modelDownload.errorMessage = "Download incomplete"
+            onboarding.modelsReady = false
           }
         }
       }
     }
 
-    await downloadTask?.value
-    downloadTask = nil
-  }
+    let currentTask = downloadTask
+    await currentTask?.value
 
-  /// Cancels any in-progress model download.
-  func cancelModelDownload() async {
-    downloadTask?.cancel()
-    downloadTask = nil
-    await whisperModelManager.cancelAllDownloads()
-    modelDownload.status = .idle
-    modelDownload.currentModel = nil
-    modelDownload.progress = 0
-    modelDownload.progressText = ""
+    if downloadOperationID == operationID {
+      downloadTask = nil
+      downloadOperationID = nil
+    }
   }
 
   // MARK: - Meeting Actions
 
   func selectMeeting(_ id: UUID) {
-    // Stop any current playback
-    playbackService.stop()
+    // Reset playback state when switching meetings.
+    playbackService.unload()
     playbackError = nil
 
     selectedMeetingID = id
@@ -476,6 +485,8 @@ final class AppState: ObservableObject {
     guard let id = selectedMeetingID, let index = meetings.firstIndex(where: { $0.id == id }) else {
       return
     }
+    guard meetings[index].title != title else { return }
+
     meetings[index].title = title
 
     // Persist to database
@@ -539,9 +550,7 @@ final class AppState: ObservableObject {
         deleteConfirmation = DeleteConfirmationState(
           meetingID: confirmation.meetingID,
           confirmationID: confirmation.confirmationID,
-          meetingTitle: confirmation.meetingTitle,
-          audioFilePath: confirmation.audioFilePath,
-          deleteAudioFile: true
+          meetingTitle: confirmation.meetingTitle
         )
       } catch {
         showAlert(title: "Delete Failed", message: error.localizedDescription)
@@ -557,8 +566,6 @@ final class AppState: ObservableObject {
       return
     }
 
-    isDeleting = true
-
     Task {
       do {
         let request = MeetingDeletionRequest(
@@ -568,9 +575,9 @@ final class AppState: ObservableObject {
         )
         try await storage.deletionService.confirmDeleteMeeting(request)
 
-        // Stop playback if we're deleting the currently playing meeting
+        // Reset playback if we're deleting the currently selected meeting
         if selectedMeetingID == confirmation.meetingID {
-          playbackService.stop()
+          playbackService.unload()
           selectedMeetingID = nil
         }
 
@@ -578,9 +585,7 @@ final class AppState: ObservableObject {
         reloadMeetings()
 
         deleteConfirmation = nil
-        isDeleting = false
       } catch {
-        isDeleting = false
         deleteConfirmation = nil
         showAlert(title: "Delete Failed", message: error.localizedDescription)
       }
@@ -603,13 +608,14 @@ final class AppState: ObservableObject {
 
   /// Perform FTS5 search on transcript text.
   func performSearch() {
-    guard let storage, !searchQuery.isEmpty else {
+    let normalizedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let storage, !normalizedQuery.isEmpty else {
       searchResultMeetingIDs = nil
       return
     }
 
     do {
-      let results = try storage.repository.searchTranscript(query: searchQuery, limit: 100)
+      let results = try storage.repository.searchTranscript(query: normalizedQuery, limit: 100)
       searchResultMeetingIDs = Set(results.map { $0.meetingID })
     } catch {
       print("Search failed: \(error)")
@@ -644,6 +650,12 @@ final class AppState: ObservableObject {
   func completeOnboarding() {
     guard canCompleteOnboarding else { return }
     showOnboarding = false
+  }
+
+  func consumeShouldAutoOpenOnboardingWindow() -> Bool {
+    guard showOnboarding, !didAutoOpenOnboardingWindow else { return false }
+    didAutoOpenOnboardingWindow = true
+    return true
   }
 
   var canCheckForUpdates: Bool {
@@ -687,7 +699,14 @@ final class AppState: ObservableObject {
     coordinatorLevelsTask?.cancel()
 
     coordinatorSegmentsTask = Task { [weak self] in
+      var lastSegmentsUIUpdateUptime: TimeInterval = 0
+      let minSegmentsUIUpdateInterval: TimeInterval = 0.20
+
       for await segments in coordinator.streams.liveSegments {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSegmentsUIUpdateUptime >= minSegmentsUIUpdateInterval else { continue }
+        lastSegmentsUIUpdateUptime = now
+
         await MainActor.run {
           self?.liveTranscriptSegments = segments.map { segment in
             TranscriptSegmentUI(
@@ -703,7 +722,14 @@ final class AppState: ObservableObject {
     }
 
     coordinatorLevelsTask = Task { [weak self] in
+      var lastLevelUIUpdateUptime: TimeInterval = 0
+      let minLevelUIUpdateInterval: TimeInterval = 0.08
+
       for await level in coordinator.streams.audioLevels {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLevelUIUpdateUptime >= minLevelUIUpdateInterval else { continue }
+        lastLevelUIUpdateUptime = now
+
         await MainActor.run {
           switch level.source {
           case .microphone:
