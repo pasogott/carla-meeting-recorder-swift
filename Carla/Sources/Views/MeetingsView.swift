@@ -78,10 +78,7 @@ private struct MeetingRowView: View {
   }
 
   private func durationLabel(_ duration: TimeInterval) -> String {
-    let formatter = DateComponentsFormatter()
-    formatter.allowedUnits = [.minute, .second]
-    formatter.zeroFormattingBehavior = .pad
-    return formatter.string(from: duration) ?? "00:00"
+    TimeLabelFormatter.mmss(duration)
   }
 }
 
@@ -202,10 +199,7 @@ struct TranscriptViewerView: View {
   }
 
   private func timeLabel(_ time: TimeInterval) -> String {
-    let formatter = DateComponentsFormatter()
-    formatter.allowedUnits = [.minute, .second]
-    formatter.zeroFormattingBehavior = .pad
-    return formatter.string(from: time) ?? "00:00"
+    TimeLabelFormatter.mmss(time)
   }
 }
 
@@ -251,9 +245,16 @@ struct OnboardingView: View {
             grantedIcon: "checkmark.circle.fill",
             pendingIcon: "mic",
             isRequesting: requestingMicrophone,
+            allowsRequestWhenDenied: true,
+            deniedRequestButtonTitle: "Open System Settings",
             onRequest: {
+              if micStatus == .denied || micStatus == .restricted {
+                appState.permissionManager.openSystemSettingsForMicrophone()
+                return
+              }
+
               requestingMicrophone = true
-              Task {
+              Task { @MainActor in
                 await appState.requestMicrophonePermission()
                 requestingMicrophone = false
               }
@@ -272,9 +273,11 @@ struct OnboardingView: View {
             grantedIcon: "checkmark.circle.fill",
             pendingIcon: "display",
             isRequesting: requestingScreenRecording,
+            allowsRequestWhenDenied: true,
+            deniedRequestButtonTitle: "Grant",
             onRequest: {
               requestingScreenRecording = true
-              Task {
+              Task { @MainActor in
                 await appState.requestScreenRecordingPermission()
                 requestingScreenRecording = false
               }
@@ -312,10 +315,13 @@ struct OnboardingView: View {
     .padding(20)
     .onAppear {
       // Re-check permissions when view appears (e.g., returning from System Settings)
-      Task {
+      Task { @MainActor in
         await appState.recheckPermissions()
-        // Check model availability on appear
-        await appState.checkModelAvailability()
+
+        // Avoid overriding active download state while a download is running.
+        if !appState.modelDownload.isDownloading {
+          await appState.checkModelAvailability()
+        }
       }
     }
   }
@@ -345,9 +351,12 @@ private struct ModelDownloadSection: View {
 
         Spacer()
 
-        if !appState.modelDownload.isComplete && !appState.modelDownload.isDownloading {
+        if !appState.modelDownload.isComplete
+          && !appState.modelDownload.isDownloading
+          && appState.modelDownload.errorMessage == nil
+        {
           Button("Download") {
-            Task {
+            Task { @MainActor in
               await appState.downloadRequiredModels()
             }
           }
@@ -381,7 +390,7 @@ private struct ModelDownloadSection: View {
           .foregroundStyle(.red)
 
         Button("Retry") {
-          Task {
+          Task { @MainActor in
             await appState.downloadRequiredModels()
           }
         }
@@ -410,6 +419,19 @@ private struct ModelDownloadSection: View {
   }
 }
 
+private enum TimeLabelFormatter {
+  private static let formatter: DateComponentsFormatter = {
+    let formatter = DateComponentsFormatter()
+    formatter.allowedUnits = [.minute, .second]
+    formatter.zeroFormattingBehavior = .pad
+    return formatter
+  }()
+
+  static func mmss(_ value: TimeInterval) -> String {
+    formatter.string(from: value) ?? "00:00"
+  }
+}
+
 /// A reusable row for displaying permission status with request/settings buttons
 private struct PermissionRow: View {
   let title: String
@@ -417,6 +439,8 @@ private struct PermissionRow: View {
   let grantedIcon: String
   let pendingIcon: String
   let isRequesting: Bool
+  let allowsRequestWhenDenied: Bool
+  let deniedRequestButtonTitle: String
   let onRequest: () -> Void
   let onOpenSettings: () -> Void
 
@@ -437,12 +461,26 @@ private struct PermissionRow: View {
             Image(systemName: "checkmark")
               .foregroundStyle(.green)
 
-          case .denied, .restricted:
-            Button("Open System Settings") {
-              onOpenSettings()
+          case .denied:
+            HStack(spacing: 8) {
+              if allowsRequestWhenDenied {
+                Button(deniedRequestButtonTitle) {
+                  onRequest()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+              }
+
+              Button("Open System Settings") {
+                onOpenSettings()
+              }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+
+          case .restricted:
+            Image(systemName: "lock.fill")
+              .foregroundStyle(.red)
 
           case .notDetermined:
             Button("Grant") {
@@ -455,9 +493,13 @@ private struct PermissionRow: View {
       }
 
       if status == .denied {
-        Text("Permission was denied. Please enable in System Settings and return here.")
-          .font(.caption)
-          .foregroundStyle(.orange)
+        Text(
+          allowsRequestWhenDenied
+            ? "Permission missing. Use \(deniedRequestButtonTitle) or enable it in System Settings."
+            : "Permission was denied. Please enable in System Settings and return here."
+        )
+        .font(.caption)
+        .foregroundStyle(.orange)
       } else if status == .restricted {
         Text("Permission is restricted by system policy.")
           .font(.caption)

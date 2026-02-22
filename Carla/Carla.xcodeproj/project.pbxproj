@@ -353,6 +353,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Carla;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Carla needs microphone access to record your voice in meetings.";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Carla needs screen and system audio recording access to capture meeting audio.";
 				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
 				INFOPLIST_KEY_SUFeedURL = "https://github.com/pasogott/carla/releases/latest/download/appcast.xml";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -380,6 +382,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Carla;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Carla needs microphone access to record your voice in meetings.";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Carla needs screen and system audio recording access to capture meeting audio.";
 				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
 				INFOPLIST_KEY_SUFeedURL = "https://github.com/pasogott/carla/releases/latest/download/appcast.xml";
 				LD_RUNPATH_SEARCH_PATHS = (
