@@ -123,6 +123,9 @@ jobs:
           printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
 
           PKCS12_OUTPUT=$(openssl pkcs12 -in "$CERT_FILE" -passin pass:"${APPLE_DEVELOPER_ID_PASSWORD:-}" -noout 2>&1 || true)
+          if [[ "$PKCS12_OUTPUT" == *"unsupported"* ]] || [[ "$PKCS12_OUTPUT" == *"Algorithm (RC2-40-CBC"* ]]; then
+            PKCS12_OUTPUT=$(openssl pkcs12 -legacy -in "$CERT_FILE" -passin pass:"${APPLE_DEVELOPER_ID_PASSWORD:-}" -noout 2>&1 || true)
+          fi
 
           if [[ "$PKCS12_OUTPUT" == *"Mac verify error"* ]] || [[ "$PKCS12_OUTPUT" == *"invalid password"* ]]; then
             echo "APPLE_DEVELOPER_ID_CERT appears to be a .p12, but APPLE_DEVELOPER_ID_PASSWORD is incorrect." >&2
