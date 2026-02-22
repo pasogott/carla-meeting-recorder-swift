@@ -11,6 +11,35 @@ TAG="${1:-local}"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT_DIR"
 
+mapfile -t ORIGINAL_KEYCHAINS < <(security list-keychains -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
+ORIGINAL_DEFAULT_KEYCHAIN=$(security default-keychain -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
+
+KEYCHAIN_PATH=""
+KEYCHAIN_PASSWORD=""
+CERT_FILE=""
+API_KEY_FILE=""
+
+cleanup() {
+  if [[ -n "$CERT_FILE" && -f "$CERT_FILE" ]]; then
+    rm -f "$CERT_FILE"
+  fi
+  if [[ -n "$API_KEY_FILE" && -f "$API_KEY_FILE" ]]; then
+    rm -f "$API_KEY_FILE"
+  fi
+
+  if [[ -n "$KEYCHAIN_PATH" ]]; then
+    security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+  fi
+
+  if [[ ${#ORIGINAL_KEYCHAINS[@]} -gt 0 ]]; then
+    security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$ORIGINAL_DEFAULT_KEYCHAIN" ]]; then
+    security default-keychain -d user -s "$ORIGINAL_DEFAULT_KEYCHAIN" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
 HAS_CERT_INPUT=1
 if [[ -z "${APPLE_DEVELOPER_ID_CERT_FILE:-}" && -z "${APPLE_DEVELOPER_ID_CERT:-}" ]]; then
   HAS_CERT_INPUT=0
@@ -28,7 +57,6 @@ mapfile_data=$(get_version_and_build)
 VERSION=$(printf '%s\n' "$mapfile_data" | sed -n '1p')
 BUILD=$(printf '%s\n' "$mapfile_data" | sed -n '2p')
 
-KEYCHAIN_PATH=""
 if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
   KEYCHAIN_PATH="${RUNNER_TEMP:-/tmp}/carla-release.keychain-db"
   KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
@@ -38,9 +66,7 @@ if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
   security list-keychains -d user -s "$KEYCHAIN_PATH"
   security default-keychain -d user -s "$KEYCHAIN_PATH"
 
-  CERT_TMP_BASE="$(mktemp /tmp/carla-cert-XXXXXX)"
-  CERT_FILE="${CERT_TMP_BASE}.p12"
-  rm -f "$CERT_TMP_BASE"
+  CERT_FILE="$(mktemp /tmp/carla-cert-XXXXXX)"
   if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
     cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
   else
@@ -49,9 +75,13 @@ if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
   security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
   security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-  SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/ *[0-9)] \([0-9A-F]\{40\}\) .*/\1/p' | head -n1)
+  SIGNING_IDENTITY=$(
+    security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+      | sed -n 's/ *[0-9)] \([0-9A-F]\{40\}\) ".*Developer ID Application:.*"/\1/p' \
+      | head -n1
+  )
   if [[ -z "$SIGNING_IDENTITY" ]]; then
-    echo "No codesigning identity found in temporary keychain after import." >&2
+    echo "No Developer ID Application identity found in temporary keychain after import." >&2
     security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
     exit 1
   fi
@@ -98,7 +128,7 @@ ZIP_NAME="Carla-${TAG}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 /usr/bin/ditto --norsrc -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
-API_KEY_FILE="$(mktemp /tmp/carla-asc-key-XXXXXX.p8)"
+API_KEY_FILE="$(mktemp /tmp/carla-asc-key-XXXXXX)"
 printf '%s' "$APP_STORE_CONNECT_API_KEY_P8" | sed 's/\\n/\
 /g' > "$API_KEY_FILE"
 
