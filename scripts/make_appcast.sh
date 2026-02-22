@@ -45,6 +45,12 @@ if [[ -z "$SIG" ]]; then
   SIG=$(printf '%s\n' "$SIGN_OUTPUT" | tr ' ' '\n' | sed -n 's/^sparkle:edSignature=//p' | tr -d '"' | head -n1)
 fi
 if [[ -z "$SIG" ]]; then
+  CANDIDATE=$(printf '%s\n' "$SIGN_OUTPUT" | tail -n1 | tr -d '[:space:]')
+  if [[ "$CANDIDATE" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+    SIG="$CANDIDATE"
+  fi
+fi
+if [[ -z "$SIG" ]]; then
   echo "Failed to parse Sparkle signature from sign_update output:" >&2
   printf '%s\n' "$SIGN_OUTPUT" >&2
   exit 1

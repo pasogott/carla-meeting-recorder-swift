@@ -11,11 +11,11 @@ TAG="${1:-local}"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT_DIR"
 
+HAS_CERT_INPUT=1
 if [[ -z "${APPLE_DEVELOPER_ID_CERT_FILE:-}" && -z "${APPLE_DEVELOPER_ID_CERT:-}" ]]; then
-  echo "Missing APPLE_DEVELOPER_ID_CERT_FILE or APPLE_DEVELOPER_ID_CERT (base64 p12)." >&2
-  exit 1
+  HAS_CERT_INPUT=0
 fi
-if [[ -z "${APPLE_DEVELOPER_ID_PASSWORD:-}" ]]; then
+if [[ "$HAS_CERT_INPUT" -eq 1 && -z "${APPLE_DEVELOPER_ID_PASSWORD:-}" ]]; then
   echo "Missing APPLE_DEVELOPER_ID_PASSWORD." >&2
   exit 1
 fi
@@ -28,32 +28,42 @@ mapfile_data=$(get_version_and_build)
 VERSION=$(printf '%s\n' "$mapfile_data" | sed -n '1p')
 BUILD=$(printf '%s\n' "$mapfile_data" | sed -n '2p')
 
-KEYCHAIN_PATH="${RUNNER_TEMP:-/tmp}/carla-release.keychain-db"
-KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
-security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-security list-keychains -d user -s "$KEYCHAIN_PATH"
-security default-keychain -d user -s "$KEYCHAIN_PATH"
+KEYCHAIN_PATH=""
+if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
+  KEYCHAIN_PATH="${RUNNER_TEMP:-/tmp}/carla-release.keychain-db"
+  KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+  security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+  security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+  security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+  security list-keychains -d user -s "$KEYCHAIN_PATH"
+  security default-keychain -d user -s "$KEYCHAIN_PATH"
 
-CERT_TMP_BASE="$(mktemp /tmp/carla-cert-XXXXXX)"
-CERT_FILE="${CERT_TMP_BASE}.p12"
-rm -f "$CERT_TMP_BASE"
-if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
-  cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
+  CERT_TMP_BASE="$(mktemp /tmp/carla-cert-XXXXXX)"
+  CERT_FILE="${CERT_TMP_BASE}.p12"
+  rm -f "$CERT_TMP_BASE"
+  if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
+    cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
+  else
+    printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
+  fi
+  security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+  security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+  SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/ *[0-9)] \([0-9A-F]\{40\}\) .*/\1/p' | head -n1)
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "No codesigning identity found in temporary keychain after import." >&2
+    security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
+    exit 1
+  fi
 else
-  printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
-fi
-security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-SIGNING_IDENTITY="${APPLE_DEVELOPER_ID:-}"
-if [[ -z "$SIGNING_IDENTITY" ]]; then
-  SIGNING_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
-fi
-if [[ -z "$SIGNING_IDENTITY" ]]; then
-  echo "No Developer ID Application identity found." >&2
-  exit 1
+  SIGNING_IDENTITY="${APPLE_DEVELOPER_ID:-}"
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
+  fi
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "No Developer ID Application identity found in current keychains. Set APPLE_DEVELOPER_ID_CERT_FILE or APPLE_DEVELOPER_ID_CERT." >&2
+    exit 1
+  fi
 fi
 
 DERIVED_DATA="$(mktemp -d /tmp/carla-derived-release-XXXXXX)"
@@ -77,7 +87,11 @@ if [[ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP_PATH/Contents/Info.plist"
 fi
 
-codesign --force --deep --timestamp --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
+if [[ -n "$KEYCHAIN_PATH" ]]; then
+  codesign --force --deep --timestamp --options runtime --keychain "$KEYCHAIN_PATH" --sign "$SIGNING_IDENTITY" "$APP_PATH"
+else
+  codesign --force --deep --timestamp --options runtime --sign "$SIGNING_IDENTITY" "$APP_PATH"
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 ZIP_NAME="Carla-${TAG}.zip"
@@ -106,15 +120,15 @@ hdiutil create -volname "Carla" -srcfolder "$STAGING" -ov -format UDZO "$DMG_PAT
 shasum -a 256 "$ZIP_PATH" | awk '{print $1}' > "$ZIP_PATH.sha256"
 shasum -a 256 "$DMG_PATH" | awk '{print $1}' > "$DMG_PATH.sha256"
 
-cat > "$OUT_DIR/release-artifacts.env" <<EOF
-VERSION=$VERSION
-BUILD=$BUILD
-TAG=$TAG
-APP_PATH=$APP_PATH
-ZIP_PATH=$ZIP_PATH
-DMG_PATH=$DMG_PATH
-SIGNING_IDENTITY=$SIGNING_IDENTITY
-EOF
+{
+  printf 'VERSION=%q\n' "$VERSION"
+  printf 'BUILD=%q\n' "$BUILD"
+  printf 'TAG=%q\n' "$TAG"
+  printf 'APP_PATH=%q\n' "$APP_PATH"
+  printf 'ZIP_PATH=%q\n' "$ZIP_PATH"
+  printf 'DMG_PATH=%q\n' "$DMG_PATH"
+  printf 'SIGNING_IDENTITY=%q\n' "$SIGNING_IDENTITY"
+} > "$OUT_DIR/release-artifacts.env"
 
 echo "Created artifacts:"
 echo "- $ZIP_PATH"
