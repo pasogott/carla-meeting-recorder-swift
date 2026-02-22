@@ -36,7 +36,9 @@ security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security list-keychains -d user -s "$KEYCHAIN_PATH"
 security default-keychain -d user -s "$KEYCHAIN_PATH"
 
-CERT_FILE="$(mktemp /tmp/carla-cert-XXXXXX.p12)"
+CERT_TMP_BASE="$(mktemp /tmp/carla-cert-XXXXXX)"
+CERT_FILE="${CERT_TMP_BASE}.p12"
+rm -f "$CERT_TMP_BASE"
 if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
   cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
 else
