@@ -11,9 +11,17 @@ The release tag format is:
 
 ### Added
 - Local release tooling (`scripts/release.sh`, `scripts/sign-and-notarize.sh`, `scripts/make_appcast.sh`) for reliable signed/notarized Sparkle releases.
+- Notch-style recording overlay with live levels and start/stop controls.
+- Settings toggle to enable/disable the notch overlay while recording.
 
 ### Changed
 - Local signing now supports `APPLE_DEVELOPER_ID_CERT_FILE` as a direct `.p12` path fallback.
+- Menu bar interactions now bring Carla windows to the foreground and improve onboarding window behavior.
+- Recording/transcription pipeline now applies bounded frame buffering, adaptive chunk sizing under thermal/low-power conditions, and throttled live UI updates to reduce CPU pressure.
+
+### Fixed
+- Microphone and screen-permission onboarding flow now handles denied states more clearly and opens the correct System Settings panes more reliably.
+- Stereo mixing now keeps mic/system channels better aligned during callback jitter, reducing stretched or choppy recordings.
 
 ## [carla-2026.02.22-02] - 2026-02-22
 
