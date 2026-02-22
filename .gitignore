@@ -24,6 +24,7 @@ Carla/Carla.xcodeproj/project.xcworkspace/
 # Signing material (never commit)
 *.p12
 *.pfx
+.release-secrets.env
 
 # Agent runtime artifacts
 .pi/
