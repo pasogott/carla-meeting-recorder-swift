@@ -10,6 +10,14 @@ The release tag format is:
 ## [Unreleased]
 
 ### Added
+- Local release tooling (`scripts/release.sh`, `scripts/sign-and-notarize.sh`, `scripts/make_appcast.sh`) for reliable signed/notarized Sparkle releases.
+
+### Changed
+- Local signing now supports `APPLE_DEVELOPER_ID_CERT_FILE` as a direct `.p12` path fallback.
+
+## [carla-2026.02.22-02] - 2026-02-22
+
+### Added
 - GitHub Actions CI workflow for strict linting, tests, and macOS build checks.
 - GitHub Actions release workflow for macOS DMG creation and release asset upload.
 - English project `README.md` and `Todo.md` status tracker.

@@ -11,8 +11,8 @@ TAG="${1:-local}"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT_DIR"
 
-if [[ -z "${APPLE_DEVELOPER_ID_CERT:-}" ]]; then
-  echo "Missing APPLE_DEVELOPER_ID_CERT (base64 p12)." >&2
+if [[ -z "${APPLE_DEVELOPER_ID_CERT_FILE:-}" && -z "${APPLE_DEVELOPER_ID_CERT:-}" ]]; then
+  echo "Missing APPLE_DEVELOPER_ID_CERT_FILE or APPLE_DEVELOPER_ID_CERT (base64 p12)." >&2
   exit 1
 fi
 if [[ -z "${APPLE_DEVELOPER_ID_PASSWORD:-}" ]]; then
@@ -41,7 +41,11 @@ security list-keychains -d user -s "$KEYCHAIN_PATH"
 security default-keychain -d user -s "$KEYCHAIN_PATH"
 
 CERT_FILE="$(mktemp /tmp/carla-cert-XXXXXX.p12)"
-printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
+if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
+  cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
+else
+  printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
+fi
 security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
 security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 

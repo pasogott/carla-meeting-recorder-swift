@@ -108,7 +108,7 @@ This local flow runs:
 Required GitHub secrets for signing:
 - `APPLE_DEVELOPER_ID_CERT`
   - preferred: base64 of a `.p12` that contains **certificate + private key**
-  - alternative: base64 of `.cer` certificate (requires `APPLE_DEVELOPER_ID_PRIVATE_KEY`)
+  - alternative: set `APPLE_DEVELOPER_ID_CERT_FILE` locally to a `.p12` file path for local release scripts
 - `APPLE_DEVELOPER_ID_PASSWORD` (password for `.p12` / private key, if set)
 - `APPLE_DEVELOPER_ID_PRIVATE_KEY` (optional; base64 `.p12` or `.key` when cert secret is `.cer`)
 - `APPLE_DEVELOPER_ID` (e.g. `Developer ID Application: Pascal Schott (TEAMID)`)
