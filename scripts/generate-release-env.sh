@@ -58,10 +58,10 @@ choose_identity() {
     exit 1
   fi
 
-  echo "Found Developer ID identities:"
+  echo "Found Developer ID identities:" >&2
   local i=1
   for id in "${identities[@]}"; do
-    echo "  [$i] $id"
+    echo "  [$i] $id" >&2
     i=$((i + 1))
   done
 
