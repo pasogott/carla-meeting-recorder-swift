@@ -52,6 +52,11 @@ struct MenuBarMenuView: View {
         openWindow(id: WindowID.settings)
       }
 
+      Button("Check for Updates…") {
+        appState.checkForUpdates()
+      }
+      .disabled(!appState.canCheckForUpdates)
+
       if appState.showOnboarding {
         Button("Finish Onboarding") {
           openWindow(id: WindowID.onboarding)

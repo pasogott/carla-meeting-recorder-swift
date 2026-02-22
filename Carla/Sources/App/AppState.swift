@@ -5,6 +5,9 @@ import CarlaTranscription
 import Combine
 import Foundation
 import SwiftUI
+#if canImport(Sparkle)
+import Sparkle
+#endif
 
 // MARK: - Recording State
 
@@ -181,6 +184,10 @@ final class AppState: ObservableObject {
   private var coordinatorSegmentsTask: Task<Void, Never>?
   private var coordinatorLevelsTask: Task<Void, Never>?
 
+  #if canImport(Sparkle)
+  private var updaterController: SPUStandardUpdaterController?
+  #endif
+
   // MARK: - Initialization
 
   init(
@@ -232,6 +239,8 @@ final class AppState: ObservableObject {
     }
 
     self.selectedMeetingID = meetings.first?.id
+
+    setupUpdater()
 
     // Subscribe to recording coordinator events
     setupCoordinatorSubscriptions()
@@ -637,7 +646,39 @@ final class AppState: ObservableObject {
     showOnboarding = false
   }
 
+  var canCheckForUpdates: Bool {
+    #if canImport(Sparkle)
+    return updaterController != nil
+    #else
+    return false
+    #endif
+  }
+
+  func checkForUpdates() {
+    #if canImport(Sparkle)
+    updaterController?.checkForUpdates(nil)
+    #endif
+  }
+
   // MARK: - Private Helpers
+
+  private func setupUpdater() {
+    #if canImport(Sparkle)
+    guard
+      let feedURLString = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+      URL(string: feedURLString) != nil,
+      !feedURLString.isEmpty
+    else {
+      return
+    }
+
+    updaterController = SPUStandardUpdaterController(
+      startingUpdater: true,
+      updaterDelegate: nil,
+      userDriverDelegate: nil
+    )
+    #endif
+  }
 
   private func setupCoordinatorSubscriptions() {
     guard let coordinator = recordingCoordinator else { return }

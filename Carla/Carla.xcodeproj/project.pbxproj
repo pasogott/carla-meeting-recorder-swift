@@ -18,6 +18,7 @@
 		A00000000000000000000061 /* CarlaTranscription in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000064 /* CarlaTranscription */; };
 		A00000000000000000000065 /* CarlaAudio in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000066 /* CarlaAudio */; };
 		A00000000000000000000067 /* CarlaRecording in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000068 /* CarlaRecording */; };
+		A00000000000000000000069 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000006A /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +43,7 @@
 				A00000000000000000000061 /* CarlaTranscription in Frameworks */,
 				A00000000000000000000065 /* CarlaAudio in Frameworks */,
 				A00000000000000000000067 /* CarlaRecording in Frameworks */,
+				A00000000000000000000069 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,6 +126,7 @@
 				A00000000000000000000064 /* CarlaTranscription */,
 				A00000000000000000000066 /* CarlaAudio */,
 				A00000000000000000000068 /* CarlaRecording */,
+				A0000000000000000000006A /* Sparkle */,
 			);
 			productName = Carla;
 			productReference = A00000000000000000000001 /* Carla.app */;
@@ -155,6 +158,7 @@
 			mainGroup = A00000000000000000000002;
 			packageReferences = (
 				A00000000000000000000062 /* CarlaPackage */,
+				A0000000000000000000006B /* SparklePackage */,
 			);
 			productRefGroup = A00000000000000000000004 /* Products */;
 			projectDirPath = "";
@@ -199,6 +203,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A0000000000000000000006B /* SparklePackage */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A00000000000000000000063 /* CarlaStorage */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -219,6 +234,11 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = CarlaRecording;
 			package = A00000000000000000000062 /* CarlaPackage */;
+		};
+		A0000000000000000000006A /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Sparkle;
+			package = A0000000000000000000006B /* SparklePackage */;
 		};
 /* End XCSwiftPackageProductDependency section */
 
@@ -333,6 +353,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Carla;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
+				INFOPLIST_KEY_SUFeedURL = "https://github.com/pasogott/carla/releases/latest/download/appcast.xml";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -358,6 +380,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Carla;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
+				INFOPLIST_KEY_SUFeedURL = "https://github.com/pasogott/carla/releases/latest/download/appcast.xml";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

@@ -101,6 +101,16 @@ Required GitHub secrets for signing:
 - `APPLE_DEVELOPER_ID_PRIVATE_KEY` (optional; base64 `.p12` or `.key` when cert secret is `.cer`)
 - `APPLE_DEVELOPER_ID` (e.g. `Developer ID Application: Pascal Schott (TEAMID)`)
 - optional: `APPLE_TEAM_ID`
+- `SPARKLE_PUBLIC_ED_KEY` (public EdDSA key embedded in app `Info.plist`)
+- `SPARKLE_PRIVATE_ED_KEY` (private EdDSA key used to sign Sparkle update archive)
+
+### Sparkle auto-updates
+Carla now includes Sparkle and exposes `Check for Updates…` in the menu.
+
+Before publishing a release, ensure:
+- `appcast.xml` is uploaded at: `https://github.com/pasogott/carla/releases/latest/download/appcast.xml`
+- release artifacts referenced by the appcast are signed and notarized
+- Sparkle signatures are generated for update archives
 
 ## Notes
 
