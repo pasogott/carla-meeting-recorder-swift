@@ -11,7 +11,10 @@ TAG="${1:-local}"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT_DIR"
 
-mapfile -t ORIGINAL_KEYCHAINS < <(security list-keychains -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
+ORIGINAL_KEYCHAINS=()
+while IFS= read -r keychain; do
+  [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+done < <(security list-keychains -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
 ORIGINAL_DEFAULT_KEYCHAIN=$(security default-keychain -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
 
 KEYCHAIN_PATH=""
