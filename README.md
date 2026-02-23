@@ -93,11 +93,37 @@ tccutil reset ScreenCapture at.cyberheld.carla
 - DMG creation
 - upload release artifacts (`Carla-<tag>.dmg`, `Carla-latest.dmg`, checksums)
 
+Recommended release path (local, more reliable for Apple signing):
+```bash
+./scripts/generate-release-env.sh
+./scripts/release.sh              # auto-picks next tag (carla-YYYY.MM.DD-XX)
+# or: ./scripts/release.sh carla-2026.02.22-02
+```
+
+This local flow runs:
+- `scripts/sign-and-notarize.sh`
+- `scripts/make_appcast.sh`
+- GitHub release asset upload (zip + dmg + appcast + sha256)
+
 Required GitHub secrets for signing:
 - `APPLE_DEVELOPER_ID_CERT`
-- `APPLE_DEVELOPER_ID_PASSWORD`
-- `APPLE_DEVELOPER_ID`
+  - preferred: base64 of a `.p12` that contains **certificate + private key**
+  - alternative: set `APPLE_DEVELOPER_ID_CERT_FILE` locally to a `.p12` file path for local release scripts
+- `APPLE_DEVELOPER_ID_PASSWORD` (password for `.p12` / private key, if set)
+- `APPLE_DEVELOPER_ID_PRIVATE_KEY` (optional; base64 `.p12` or `.key` when cert secret is `.cer`)
+- `APPLE_DEVELOPER_ID` (e.g. `Developer ID Application: Pascal Schott (TEAMID)`)
 - optional: `APPLE_TEAM_ID`
+- `SPARKLE_PUBLIC_ED_KEY` (public EdDSA key embedded in app `Info.plist`)
+- `SPARKLE_PRIVATE_ED_KEY` (private EdDSA key used to sign Sparkle update archive)
+- `APP_STORE_CONNECT_API_KEY_P8`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` (for notarization)
+
+### Sparkle auto-updates
+Carla now includes Sparkle and exposes `Check for Updates…` in the menu.
+
+Before publishing a release, ensure:
+- `appcast.xml` is uploaded at: `https://github.com/pasogott/carla/releases/latest/download/appcast.xml`
+- release artifacts referenced by the appcast are signed and notarized
+- Sparkle signatures are generated for update archives
 
 ## Notes
 

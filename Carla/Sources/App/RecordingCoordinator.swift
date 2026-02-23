@@ -34,6 +34,8 @@ public struct RecordingConfiguration: Sendable {
   public let autoDetectFallback: Bool
   public let compressToM4A: Bool
   public let deleteWAVAfterCompression: Bool
+  public let maxQueuedFrames: Int
+  public let liveTranscriptUpdateInterval: TimeInterval
 
   public init(
     whisperModel: WhisperModel = .base,
@@ -41,7 +43,9 @@ public struct RecordingConfiguration: Sendable {
     primaryLanguageCode: String? = nil,
     autoDetectFallback: Bool = true,
     compressToM4A: Bool = true,
-    deleteWAVAfterCompression: Bool = true
+    deleteWAVAfterCompression: Bool = true,
+    maxQueuedFrames: Int = 256,
+    liveTranscriptUpdateInterval: TimeInterval = 0.25
   ) {
     self.whisperModel = whisperModel
     self.chunkDuration = chunkDuration
@@ -49,6 +53,8 @@ public struct RecordingConfiguration: Sendable {
     self.autoDetectFallback = autoDetectFallback
     self.compressToM4A = compressToM4A
     self.deleteWAVAfterCompression = deleteWAVAfterCompression
+    self.maxQueuedFrames = max(32, maxQueuedFrames)
+    self.liveTranscriptUpdateInterval = max(0.05, liveTranscriptUpdateInterval)
   }
 }
 
@@ -62,6 +68,7 @@ private struct ActiveRecording {
 
   var microphoneSegments: [CarlaTranscription.TranscriptSegment]
   var systemSegments: [CarlaTranscription.TranscriptSegment]
+  var lastLiveTranscriptYieldUptime: TimeInterval
 }
 
 /// Coordinates the end-to-end recording flow: audio capture, realtime transcription, storage.
@@ -80,7 +87,7 @@ public actor RecordingCoordinator {
   private let transcriptionOrchestrator: TranscriptionJobOrchestrator
   private let repository: MeetingRepository
   private let paths: AppStoragePaths
-  private let configuration: RecordingConfiguration
+  private var configuration: RecordingConfiguration
 
   private let liveSegmentsContinuation:
     AsyncStream<[CarlaTranscription.TranscriptSegment]>.Continuation
@@ -119,6 +126,11 @@ public actor RecordingCoordinator {
 
   public var isRecording: Bool {
     activeRecording != nil
+  }
+
+  /// Updates runtime recording/transcription configuration.
+  public func updateConfiguration(_ configuration: RecordingConfiguration) {
+    self.configuration = configuration
   }
 
   /// Starts a new recording session.
@@ -191,7 +203,7 @@ public actor RecordingCoordinator {
 
     let baseConfig = RealtimeTranscriptionJobConfiguration(
       model: configuration.whisperModel,
-      chunkDuration: configuration.chunkDuration,
+      chunkDuration: Self.effectiveChunkDuration(base: configuration.chunkDuration),
       language: language
     )
 
@@ -208,7 +220,9 @@ public actor RecordingCoordinator {
     let timelineStartUptime = ProcessInfo.processInfo.systemUptime
 
     var framesContinuation: AsyncStream<(CapturedAudioFrame, TimeInterval)>.Continuation?
-    let frames = AsyncStream<(CapturedAudioFrame, TimeInterval)> { continuation in
+    let frames = AsyncStream<(CapturedAudioFrame, TimeInterval)>(
+      bufferingPolicy: .bufferingNewest(configuration.maxQueuedFrames)
+    ) { continuation in
       framesContinuation = continuation
     }
 
@@ -254,7 +268,8 @@ public actor RecordingCoordinator {
       microphoneJobID: microphoneJobID,
       systemJobID: systemJobID,
       microphoneSegments: [],
-      systemSegments: []
+      systemSegments: [],
+      lastLiveTranscriptYieldUptime: 0
     )
 
     return meetingID
@@ -309,6 +324,7 @@ public actor RecordingCoordinator {
 
     let mergedSegments = Self.mergeSegments(
       microphoneSegments: microphoneSegments, systemSegments: systemSegments)
+    liveSegmentsContinuation.yield(mergedSegments)
 
     // Update meeting metadata + final stereo file path.
     let endedAt = Date()
@@ -391,8 +407,16 @@ public actor RecordingCoordinator {
         systemSegments: recording.systemSegments
       )
 
+      let now = ProcessInfo.processInfo.systemUptime
+      let shouldYield = now - recording.lastLiveTranscriptYieldUptime
+        >= configuration.liveTranscriptUpdateInterval
+
+      if shouldYield {
+        recording.lastLiveTranscriptYieldUptime = now
+        liveSegmentsContinuation.yield(merged)
+      }
+
       activeRecording = recording
-      liveSegmentsContinuation.yield(merged)
 
     } catch {
       // Best-effort: do not interrupt recording.
@@ -441,6 +465,29 @@ public actor RecordingCoordinator {
       return $0.endTime < $1.endTime
     }
     return all
+  }
+
+  private static func effectiveChunkDuration(base: TimeInterval) -> TimeInterval {
+    var duration = max(1.0, base)
+
+    if ProcessInfo.processInfo.isLowPowerModeEnabled {
+      duration = max(duration, 3.0)
+    }
+
+    switch ProcessInfo.processInfo.thermalState {
+    case .nominal:
+      break
+    case .fair:
+      duration = max(duration, 2.5)
+    case .serious:
+      duration = max(duration, 3.5)
+    case .critical:
+      duration = max(duration, 5.0)
+    @unknown default:
+      duration = max(duration, 3.0)
+    }
+
+    return duration
   }
 
   private static func defaultMeetingTitle(for date: Date) -> String {

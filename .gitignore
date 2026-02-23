@@ -21,6 +21,21 @@ Carla/Carla.xcodeproj/project.xcworkspace/
 .idea/
 *.swp
 
+# Signing material (never commit)
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+.release-secrets.env
+
+# Local env files
+.env
+
+# Generated release artifacts
+/dist/
+/appcast.xml
+/appcast.xml.sha256
+
 # Agent runtime artifacts
 .pi/
 .agent-logs/
