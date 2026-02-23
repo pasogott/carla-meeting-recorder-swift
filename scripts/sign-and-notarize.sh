@@ -11,7 +11,10 @@ TAG="${1:-local}"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT_DIR"
 
-mapfile -t ORIGINAL_KEYCHAINS < <(security list-keychains -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
+ORIGINAL_KEYCHAINS=()
+while IFS= read -r keychain; do
+  [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+done < <(security list-keychains -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
 ORIGINAL_DEFAULT_KEYCHAIN=$(security default-keychain -d user | sed 's/^[[:space:]]*//' | sed 's/^"//; s/"$//')
 
 KEYCHAIN_PATH=""
@@ -58,6 +61,20 @@ VERSION=$(printf '%s\n' "$mapfile_data" | sed -n '1p')
 BUILD=$(printf '%s\n' "$mapfile_data" | sed -n '2p')
 
 if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
+  CERT_FILE="$(mktemp /tmp/carla-cert-XXXXXX)"
+  if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
+    cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
+  else
+    printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
+  fi
+
+  if ! openssl pkcs12 -in "$CERT_FILE" -passin "pass:${APPLE_DEVELOPER_ID_PASSWORD}" -nokeys -info >/dev/null 2>&1; then
+    echo "Developer ID cert input is not a valid PKCS#12 bundle. Falling back to installed keychain identity." >&2
+    HAS_CERT_INPUT=0
+  fi
+fi
+
+if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
   KEYCHAIN_PATH="${RUNNER_TEMP:-/tmp}/carla-release.keychain-db"
   KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
@@ -66,12 +83,6 @@ if [[ "$HAS_CERT_INPUT" -eq 1 ]]; then
   security list-keychains -d user -s "$KEYCHAIN_PATH"
   security default-keychain -d user -s "$KEYCHAIN_PATH"
 
-  CERT_FILE="$(mktemp /tmp/carla-cert-XXXXXX)"
-  if [[ -n "${APPLE_DEVELOPER_ID_CERT_FILE:-}" ]]; then
-    cp "$APPLE_DEVELOPER_ID_CERT_FILE" "$CERT_FILE"
-  else
-    printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_FILE"
-  fi
   security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
   security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
