@@ -146,8 +146,8 @@ final class PermissionManager: ObservableObject {
   func openSystemSettingsForMicrophone() {
     openSystemSettings(
       panes: [
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
         "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
         "x-apple.systempreferences:com.apple.preference.security",
       ]
     )
@@ -157,8 +157,10 @@ final class PermissionManager: ObservableObject {
   func openSystemSettingsForScreenRecording() {
     openSystemSettings(
       panes: [
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenRecording",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording",
         "x-apple.systempreferences:com.apple.preference.security",
       ]
     )

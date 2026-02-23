@@ -6,87 +6,125 @@ struct MenuBarMenuView: View {
   @ObservedObject var appState: AppState
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(spacing: 16) {
+      // 1. Status Header
       HStack {
-        Label(
-          appState.recordingState == .recording ? "Recording" : "Idle",
-          systemImage: appState.recordingState == .recording ? "record.circle.fill" : "pause.circle"
-        )
-        .foregroundStyle(appState.recordingState == .recording ? .red : .secondary)
+        HStack(spacing: 8) {
+          Circle()
+            .fill(appState.recordingState == .recording ? Color.red : Color.green)
+            .frame(width: 8, height: 8)
+            .shadow(
+              color: appState.recordingState == .recording ? .red.opacity(0.5) : .clear, radius: 4)
+
+          Text(appState.recordingState == .recording ? "Recording" : "Ready")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.primary)
+        }
+
+        Spacer()
 
         if appState.recordingState == .recording {
-          Spacer()
           Text(formatDuration(appState.currentRecordingDuration))
-            .font(.system(.body, design: .monospaced))
+            .font(.system(size: 13, weight: .semibold, design: .monospaced))
             .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
       }
 
+      // 2. Audio Meters (Conditional)
       if appState.recordingState == .recording {
-        DualAudioLevelMetersView(
-          microphoneLevel: appState.microphoneLevel,
-          systemAudioLevel: appState.systemAudioLevel,
-          segmented: true
-        )
-        .padding(.vertical, 2)
+        VStack(spacing: 10) {
+          DualAudioLevelMetersView(
+            microphoneLevel: appState.microphoneLevel,
+            systemAudioLevel: appState.systemAudioLevel,
+            segmented: false  // Continuous looks cleaner in this context
+          )
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
       }
 
-      Button(appState.recordingState == .recording ? "Stop Recording" : "Start Recording") {
+      // 3. Primary Action
+      Button {
         appState.toggleRecording()
+      } label: {
+        HStack {
+          Image(systemName: appState.recordingState == .recording ? "stop.fill" : "circle.fill")
+            .font(.system(size: 12))
+          Text(appState.recordingState == .recording ? "Stop Recording" : "Start Recording")
+        }
+        .fontWeight(.medium)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
       }
       .buttonStyle(.borderedProminent)
-      .controlSize(.small)
+      .tint(appState.recordingState == .recording ? .red : .accentColor)
+      .controlSize(.large)
+      .disabled(appState.recordingState == .starting || appState.recordingState == .stopping)
 
       Divider()
 
-      menuAction("View Meetings", systemImage: "list.bullet.rectangle") {
-        openAppWindow(WindowID.meetings)
-        openAppWindow(WindowID.transcript)
+      // 4. Secondary Actions
+      VStack(spacing: 2) {
+        MenuActionButton(title: "Meetings", icon: "list.bullet.rectangle") {
+          openAppWindow(WindowID.meetings)
+        }
+
+        MenuActionButton(title: "Transcript", icon: "text.bubble") {
+          openAppWindow(WindowID.transcript)
+        }
+
+        MenuActionButton(title: "Settings", icon: "gearshape") {
+          openAppWindow(WindowID.settings)
+        }
       }
 
-      menuAction("Open Transcript Viewer", systemImage: "text.bubble") {
-        openAppWindow(WindowID.transcript)
-      }
-
-      menuAction("Settings", systemImage: "gearshape") {
-        openAppWindow(WindowID.settings)
-      }
-
-      menuAction("Check for Updates…", systemImage: "arrow.triangle.2.circlepath") {
-        appState.checkForUpdates()
-      }
-      .disabled(!appState.canCheckForUpdates)
-
-      if appState.showOnboarding {
-        menuAction("Finish Onboarding", systemImage: "sparkles") {
-          openAppWindow(WindowID.onboarding)
+      // 5. Contextual Actions
+      if appState.canCheckForUpdates || appState.showOnboarding {
+        Divider()
+        VStack(spacing: 2) {
+          if appState.canCheckForUpdates {
+            MenuActionButton(title: "Check for Updates…", icon: "arrow.triangle.2.circlepath") {
+              appState.checkForUpdates()
+            }
+          }
+          if appState.showOnboarding {
+            MenuActionButton(title: "Finish Setup", icon: "sparkles") {
+              openAppWindow(WindowID.settings)
+            }
+            .foregroundStyle(.blue)
+          }
         }
       }
 
       Divider()
 
-      menuAction("Quit Carla", systemImage: "power") {
-        NSApp.terminate(nil)
+      // 6. Footer
+      HStack {
+        Text("Carla")
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+        Spacer()
+        Button("Quit") {
+          NSApp.terminate(nil)
+        }
+        .buttonStyle(.plain)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .keyboardShortcut("q")
       }
-      .keyboardShortcut("q")
     }
-    .padding(12)
-    .frame(minWidth: 260)
+    .padding(16)
+    .frame(width: 280)
     .onAppear {
       if appState.consumeShouldAutoOpenOnboardingWindow() {
-        openAppWindow(WindowID.onboarding)
+        openAppWindow(WindowID.settings)
       }
     }
-  }
-
-  private func menuAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      Label(title, systemImage: systemImage)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
   }
 
   private func openAppWindow(_ id: String) {
@@ -103,5 +141,35 @@ struct MenuBarMenuView: View {
       return String(format: "%d:%02d:%02d", hours, minutes, seconds)
     }
     return String(format: "%d:%02d", minutes, seconds)
+  }
+}
+
+private struct MenuActionButton: View {
+  let title: String
+  let icon: String
+  let action: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 12) {
+        Image(systemName: icon)
+          .font(.system(size: 14))
+          .frame(width: 20, alignment: .center)
+          .foregroundStyle(.secondary)
+
+        Text(title)
+          .font(.system(size: 13))
+
+        Spacer()
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .background(isHovering ? Color.primary.opacity(0.05) : Color.clear)
+      .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
   }
 }

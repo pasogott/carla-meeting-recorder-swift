@@ -87,7 +87,7 @@ public actor RecordingCoordinator {
   private let transcriptionOrchestrator: TranscriptionJobOrchestrator
   private let repository: MeetingRepository
   private let paths: AppStoragePaths
-  private let configuration: RecordingConfiguration
+  private var configuration: RecordingConfiguration
 
   private let liveSegmentsContinuation:
     AsyncStream<[CarlaTranscription.TranscriptSegment]>.Continuation
@@ -126,6 +126,11 @@ public actor RecordingCoordinator {
 
   public var isRecording: Bool {
     activeRecording != nil
+  }
+
+  /// Updates runtime recording/transcription configuration.
+  public func updateConfiguration(_ configuration: RecordingConfiguration) {
+    self.configuration = configuration
   }
 
   /// Starts a new recording session.

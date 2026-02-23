@@ -39,10 +39,6 @@ struct CarlaApp: App {
         .frame(minWidth: 560, minHeight: 420)
     }
 
-    Window("Welcome", id: WindowID.onboarding) {
-      OnboardingView(appState: appState)
-        .frame(minWidth: 580, minHeight: 500)
-    }
   }
 }
 
@@ -144,17 +140,19 @@ private struct NotchOverlayView: View {
   }
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: 12) {
+      // Live Waveform
       NotchWaveBars(level: level, active: appState.recordingState == .recording)
 
       Text(statusText)
-        .font(.system(size: 12, weight: .semibold, design: .rounded))
-        .foregroundStyle(.white.opacity(0.9))
+        .font(.system(size: 13, weight: .semibold, design: .rounded))
+        .foregroundStyle(.white.opacity(0.95))
 
       if appState.recordingState == .recording {
         Text(formatDuration(appState.currentRecordingDuration))
-          .font(.system(size: 12, weight: .regular, design: .monospaced))
+          .font(.system(size: 13, weight: .medium, design: .monospaced))
           .foregroundStyle(.white.opacity(0.65))
+          .transition(.opacity)
       }
 
       Spacer(minLength: 8)
@@ -166,7 +164,10 @@ private struct NotchOverlayView: View {
       .buttonStyle(.plain)
       .padding(.horizontal, 10)
       .padding(.vertical, 5)
-      .background(appState.recordingState == .recording ? Color.red.opacity(0.9) : Color.white.opacity(0.14), in: Capsule())
+      .background(
+        appState.recordingState == .recording ? Color.red.opacity(0.9) : Color.white.opacity(0.14),
+        in: Capsule()
+      )
       .overlay {
         Capsule().stroke(.white.opacity(0.18), lineWidth: 0.8)
       }
@@ -176,7 +177,11 @@ private struct NotchOverlayView: View {
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
     .frame(width: 360, height: 56)
-    .background(Color.black.opacity(0.96), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .background(
+      VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
     .overlay {
       RoundedRectangle(cornerRadius: 18, style: .continuous)
         .stroke(
@@ -236,5 +241,23 @@ private struct NotchWaveBars: View {
     let centerDistance = abs(CGFloat(index) - 3)
     let centerFactor = 1 - (centerDistance / 3) * 0.35
     return max(4, 4 + 14 * clamped * centerFactor)
+  }
+}
+
+private struct VisualEffectView: NSViewRepresentable {
+  let material: NSVisualEffectView.Material
+  let blendingMode: NSVisualEffectView.BlendingMode
+
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    view.material = material
+    view.blendingMode = blendingMode
+    view.state = .active
+    return view
+  }
+
+  func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+    nsView.material = material
+    nsView.blendingMode = blendingMode
   }
 }

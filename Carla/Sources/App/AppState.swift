@@ -183,6 +183,10 @@ final class AppState: ObservableObject {
   private var coordinatorLevelsTask: Task<Void, Never>?
   private var didAutoOpenOnboardingWindow = false
 
+  private enum DefaultsKey {
+    static let onboardingCompleted = "at.cyberheld.carla.onboarding_completed"
+  }
+
   #if canImport(Sparkle)
     private var updaterController: SPUStandardUpdaterController?
   #endif
@@ -220,7 +224,7 @@ final class AppState: ObservableObject {
           transcriptionOrchestrator: transcriptionOrchestrator,
           repository: realStorage.repository,
           paths: AppStoragePaths(),
-          configuration: RecordingConfiguration()
+          configuration: Self.makeRecordingConfiguration(from: .default)
         )
         self.recordingCoordinator = coordinator
       } catch {
@@ -239,6 +243,9 @@ final class AppState: ObservableObject {
 
     self.selectedMeetingID = meetings.first?.id
 
+    let onboardingCompleted = UserDefaults.standard.bool(forKey: DefaultsKey.onboardingCompleted)
+    showOnboarding = !onboardingCompleted
+
     setupUpdater()
 
     // Subscribe to recording coordinator events
@@ -249,6 +256,13 @@ final class AppState: ObservableObject {
 
     // Subscribe to search query changes for FTS5 search
     setupSearchSubscription()
+
+    // Keep recording/transcription configuration in sync with settings.
+    setupSettingsSubscription()
+    Task { [weak self] in
+      guard let self else { return }
+      await self.applyRecordingConfiguration(self.settings)
+    }
 
     // Forward permission updates so AppState-driven views refresh.
     self.permissionManager.objectWillChange
@@ -576,13 +590,19 @@ final class AppState: ObservableObject {
         try await storage.deletionService.confirmDeleteMeeting(request)
 
         // Reset playback if we're deleting the currently selected meeting
-        if selectedMeetingID == confirmation.meetingID {
+        let deletedSelectedMeeting = selectedMeetingID == confirmation.meetingID
+        if deletedSelectedMeeting {
           playbackService.unload()
           selectedMeetingID = nil
         }
 
         // Refresh the meetings list
         reloadMeetings()
+
+        // Keep transcript view usable after deleting selected meeting.
+        if deletedSelectedMeeting, let firstMeetingID = meetings.first?.id {
+          selectMeeting(firstMeetingID)
+        }
 
         deleteConfirmation = nil
       } catch {
@@ -650,6 +670,7 @@ final class AppState: ObservableObject {
   func completeOnboarding() {
     guard canCompleteOnboarding else { return }
     showOnboarding = false
+    UserDefaults.standard.set(true, forKey: DefaultsKey.onboardingCompleted)
   }
 
   func consumeShouldAutoOpenOnboardingWindow() -> Bool {
@@ -771,6 +792,48 @@ final class AppState: ObservableObject {
         self?.performSearch()
       }
       .store(in: &cancellables)
+  }
+
+  private func setupSettingsSubscription() {
+    $settings
+      .removeDuplicates()
+      .sink { [weak self] updatedSettings in
+        guard let self else { return }
+        Task {
+          await self.applyRecordingConfiguration(updatedSettings)
+        }
+      }
+      .store(in: &cancellables)
+  }
+
+  private func applyRecordingConfiguration(_ settings: AppSettings) async {
+    guard let recordingCoordinator else { return }
+    await recordingCoordinator.updateConfiguration(Self.makeRecordingConfiguration(from: settings))
+  }
+
+  private static func makeRecordingConfiguration(from settings: AppSettings) -> RecordingConfiguration {
+    let normalizedLanguage = settings.primaryLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+    let selectedLanguage = normalizedLanguage.isEmpty ? nil : normalizedLanguage.lowercased()
+
+    return RecordingConfiguration(
+      whisperModel: whisperModel(from: settings.selectedModel),
+      primaryLanguageCode: selectedLanguage
+    )
+  }
+
+  private static func whisperModel(from rawValue: String) -> WhisperModel {
+    switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "base":
+      return .base
+    case "small":
+      return .small
+    case "medium":
+      return .medium
+    case "large":
+      return .large
+    default:
+      return .base
+    }
   }
 
   private func startDurationTimer() {
@@ -898,5 +961,4 @@ enum WindowID {
   static let meetings = "meetings-window"
   static let transcript = "transcript-window"
   static let settings = "settings-window"
-  static let onboarding = "onboarding-window"
 }
