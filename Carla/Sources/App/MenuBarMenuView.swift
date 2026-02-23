@@ -11,12 +11,12 @@ struct MenuBarMenuView: View {
       HStack {
         HStack(spacing: 8) {
           Circle()
-            .fill(appState.recordingState == .recording ? Color.red : Color.green)
+            .fill(statusIndicatorColor)
             .frame(width: 8, height: 8)
             .shadow(
               color: appState.recordingState == .recording ? .red.opacity(0.5) : .clear, radius: 4)
 
-          Text(appState.recordingState == .recording ? "Recording" : "Ready")
+          Text(statusText)
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(.primary)
         }
@@ -53,16 +53,16 @@ struct MenuBarMenuView: View {
         appState.toggleRecording()
       } label: {
         HStack {
-          Image(systemName: appState.recordingState == .recording ? "stop.fill" : "circle.fill")
+          Image(systemName: primaryActionIcon)
             .font(.system(size: 12))
-          Text(appState.recordingState == .recording ? "Stop Recording" : "Start Recording")
+          Text(primaryActionTitle)
         }
         .fontWeight(.medium)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
       }
       .buttonStyle(.borderedProminent)
-      .tint(appState.recordingState == .recording ? .red : .accentColor)
+      .tint(primaryActionTint)
       .controlSize(.large)
       .disabled(appState.recordingState == .starting || appState.recordingState == .stopping)
 
@@ -94,6 +94,7 @@ struct MenuBarMenuView: View {
           }
           if appState.showOnboarding {
             MenuActionButton(title: "Finish Setup", icon: "sparkles") {
+              appState.showOnboardingInSettings()
               openAppWindow(WindowID.settings)
             }
             .foregroundStyle(.blue)
@@ -121,9 +122,65 @@ struct MenuBarMenuView: View {
     .padding(16)
     .frame(width: 280)
     .onAppear {
-      if appState.consumeShouldAutoOpenOnboardingWindow() {
+      if appState.consumeShouldAutoOpenSetupWindow() {
+        appState.showOnboardingInSettings()
         openAppWindow(WindowID.settings)
       }
+    }
+  }
+
+  private var statusText: String {
+    switch appState.recordingState {
+    case .idle:
+      return "Ready"
+    case .starting:
+      return "Starting…"
+    case .recording:
+      return "Recording"
+    case .stopping:
+      return "Stopping…"
+    }
+  }
+
+  private var statusIndicatorColor: Color {
+    switch appState.recordingState {
+    case .idle:
+      return .green
+    case .starting, .stopping:
+      return .orange
+    case .recording:
+      return .red
+    }
+  }
+
+  private var primaryActionTitle: String {
+    switch appState.recordingState {
+    case .idle:
+      return "Start Recording"
+    case .starting:
+      return "Starting…"
+    case .recording:
+      return "Stop Recording"
+    case .stopping:
+      return "Stopping…"
+    }
+  }
+
+  private var primaryActionIcon: String {
+    switch appState.recordingState {
+    case .recording, .stopping:
+      return "stop.fill"
+    case .idle, .starting:
+      return "circle.fill"
+    }
+  }
+
+  private var primaryActionTint: Color {
+    switch appState.recordingState {
+    case .recording, .stopping:
+      return .red
+    case .idle, .starting:
+      return .accentColor
     }
   }
 

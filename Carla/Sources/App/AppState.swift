@@ -47,6 +47,14 @@ struct MeetingUI: Identifiable, Hashable {
 
 // MARK: - Settings
 
+enum SettingsTab: Hashable {
+  case general
+  case audio
+  case transcription
+  case storage
+  case onboarding
+}
+
 struct AppSettings: Equatable {
   var selectedInputDevice: String
   var selectedOutputDevice: String
@@ -141,6 +149,7 @@ final class AppState: ObservableObject {
   // MARK: - Settings & Onboarding
 
   @Published var settings: AppSettings = .default
+  @Published var selectedSettingsTab: SettingsTab = .general
   @Published var onboarding = OnboardingState()
   @Published var showOnboarding: Bool = true
 
@@ -181,7 +190,7 @@ final class AppState: ObservableObject {
 
   private var coordinatorSegmentsTask: Task<Void, Never>?
   private var coordinatorLevelsTask: Task<Void, Never>?
-  private var didAutoOpenOnboardingWindow = false
+  private var didAutoOpenSetupWindow = false
 
   private enum DefaultsKey {
     static let onboardingCompleted = "at.cyberheld.carla.onboarding_completed"
@@ -663,19 +672,20 @@ final class AppState: ObservableObject {
 
   // MARK: - Settings
 
-  func saveSettings(_ updated: AppSettings) {
-    settings = updated
+  func showOnboardingInSettings() {
+    selectedSettingsTab = .onboarding
   }
 
   func completeOnboarding() {
     guard canCompleteOnboarding else { return }
     showOnboarding = false
+    selectedSettingsTab = .general
     UserDefaults.standard.set(true, forKey: DefaultsKey.onboardingCompleted)
   }
 
-  func consumeShouldAutoOpenOnboardingWindow() -> Bool {
-    guard showOnboarding, !didAutoOpenOnboardingWindow else { return false }
-    didAutoOpenOnboardingWindow = true
+  func consumeShouldAutoOpenSetupWindow() -> Bool {
+    guard showOnboarding, !didAutoOpenSetupWindow else { return false }
+    didAutoOpenSetupWindow = true
     return true
   }
 

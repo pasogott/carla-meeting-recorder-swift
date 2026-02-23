@@ -21,6 +21,10 @@ final class PermissionManager: ObservableObject {
 
   private var cancellables = Set<AnyCancellable>()
 
+  private enum DefaultsKey {
+    static let didRequestScreenRecording = "at.cyberheld.carla.permissions.screen_recording_requested"
+  }
+
   /// Whether all required permissions are granted
   var allPermissionsGranted: Bool {
     microphoneStatus == .granted && screenRecordingStatus == .granted
@@ -62,21 +66,25 @@ final class PermissionManager: ObservableObject {
   /// Uses CGPreflightScreenCaptureAccess() which doesn't prompt
   func checkScreenRecordingStatus() async {
     // CGPreflightScreenCaptureAccess returns true if access is granted,
-    // false if denied or not determined
+    // false if denied or not determined.
     let hasAccess = CGPreflightScreenCaptureAccess()
 
     if hasAccess {
       screenRecordingStatus = .granted
-    } else {
-      // Try to enumerate shareable content to check if we have permission
-      // This is a more reliable check than CGPreflight alone
-      do {
-        _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        screenRecordingStatus = .granted
-      } catch {
-        // ScreenCaptureKit does not expose a definitive notDetermined/denied status here.
-        screenRecordingStatus = .denied
-      }
+      return
+    }
+
+    // Try to enumerate shareable content to check if we have permission.
+    // This is a more reliable check than CGPreflight alone.
+    do {
+      _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+      screenRecordingStatus = .granted
+      return
+    } catch {
+      // ScreenCaptureKit does not expose a definitive notDetermined/denied status.
+      // We track whether this app has already requested permission at least once.
+      let hasRequested = UserDefaults.standard.bool(forKey: DefaultsKey.didRequestScreenRecording)
+      screenRecordingStatus = hasRequested ? .denied : .notDetermined
     }
   }
 
@@ -114,6 +122,8 @@ final class PermissionManager: ObservableObject {
   /// - Returns: true if granted, false if denied
   @discardableResult
   func requestScreenRecordingPermission() async -> Bool {
+    UserDefaults.standard.set(true, forKey: DefaultsKey.didRequestScreenRecording)
+
     // First check if we already have permission
     let hasAccess = CGPreflightScreenCaptureAccess()
 

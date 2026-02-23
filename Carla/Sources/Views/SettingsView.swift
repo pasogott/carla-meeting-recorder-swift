@@ -12,12 +12,12 @@ struct SettingsView: View {
   private let languages = ["en", "de", "fr", "es", "it"]
 
   var body: some View {
-    TabView {
+    TabView(selection: $coordinator.selectedSettingsTab) {
       GeneralSettingsTab(settings: $coordinator.settings)
         .tabItem {
           Label("General", systemImage: "gear")
         }
-        .tag("general")
+        .tag(SettingsTab.general)
 
       AudioSettingsTab(
         settings: $coordinator.settings,
@@ -27,7 +27,7 @@ struct SettingsView: View {
       .tabItem {
         Label("Audio", systemImage: "mic.fill")
       }
-      .tag("audio")
+      .tag(SettingsTab.audio)
 
       TranscriptionSettingsTab(
         settings: $coordinator.settings,
@@ -37,19 +37,19 @@ struct SettingsView: View {
       .tabItem {
         Label("Transcription", systemImage: "waveform.badge.magnifyingglass")
       }
-      .tag("transcription")
+      .tag(SettingsTab.transcription)
 
       StorageSettingsTab(settings: $coordinator.settings)
         .tabItem {
           Label("Storage", systemImage: "externaldrive.fill")
         }
-        .tag("storage")
+        .tag(SettingsTab.storage)
 
       OnboardingSettingsTab(appState: coordinator)
         .tabItem {
           Label("Onboarding", systemImage: "checkmark.seal")
         }
-        .tag("onboarding")
+        .tag(SettingsTab.onboarding)
     }
     .padding(20)
     .frame(width: 500)  // Standard width for macOS settings windows
@@ -188,19 +188,17 @@ private struct OnboardingSettingsTab: View {
             .foregroundStyle(color(for: appState.permissionManager.microphoneStatus))
         }
 
-        HStack {
-          Button("Request Microphone") {
-            Task { @MainActor in
-              await appState.requestMicrophonePermission()
-            }
-          }
-          .buttonStyle(.bordered)
-
-          Button("Open Microphone Settings") {
+        permissionActions(
+          status: appState.permissionManager.microphoneStatus,
+          grantTitle: "Grant Microphone",
+          settingsTitle: "Open Microphone Settings",
+          onGrant: {
+            await appState.requestMicrophonePermission()
+          },
+          onOpenSettings: {
             appState.permissionManager.openSystemSettingsForMicrophone()
           }
-          .buttonStyle(.bordered)
-        }
+        )
 
         Divider()
 
@@ -211,19 +209,17 @@ private struct OnboardingSettingsTab: View {
             .foregroundStyle(color(for: appState.permissionManager.screenRecordingStatus))
         }
 
-        HStack {
-          Button("Request Screen Recording") {
-            Task { @MainActor in
-              await appState.requestScreenRecordingPermission()
-            }
-          }
-          .buttonStyle(.bordered)
-
-          Button("Open Screen Recording Settings") {
+        permissionActions(
+          status: appState.permissionManager.screenRecordingStatus,
+          grantTitle: "Grant Screen Recording",
+          settingsTitle: "Open Screen Recording Settings",
+          onGrant: {
+            await appState.requestScreenRecordingPermission()
+          },
+          onOpenSettings: {
             appState.permissionManager.openSystemSettingsForScreenRecording()
           }
-          .buttonStyle(.bordered)
-        }
+        )
 
         Button("Refresh Permission Status") {
           Task { @MainActor in
@@ -275,6 +271,12 @@ private struct OnboardingSettingsTab: View {
       }
     }
     .formStyle(.grouped)
+    .task {
+      await appState.recheckPermissions()
+      if !appState.modelDownload.isDownloading {
+        await appState.checkModelAvailability()
+      }
+    }
   }
 
   private var modelStatusText: String {
@@ -318,6 +320,41 @@ private struct OnboardingSettingsTab: View {
     case .denied: return .orange
     case .restricted: return .red
     case .notDetermined: return .secondary
+    }
+  }
+
+  @ViewBuilder
+  private func permissionActions(
+    status: PermissionStatus,
+    grantTitle: String,
+    settingsTitle: String,
+    onGrant: @escaping () async -> Void,
+    onOpenSettings: @escaping () -> Void
+  ) -> some View {
+    switch status {
+    case .notDetermined:
+      Button(grantTitle) {
+        Task { @MainActor in
+          await onGrant()
+        }
+      }
+      .buttonStyle(.bordered)
+
+    case .denied:
+      Button(settingsTitle) {
+        onOpenSettings()
+      }
+      .buttonStyle(.bordered)
+
+    case .restricted:
+      Text("Permission is restricted by system policy")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+    case .granted:
+      Text("Permission granted")
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 }
