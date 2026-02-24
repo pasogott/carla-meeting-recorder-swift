@@ -3,7 +3,7 @@
 ## Current Status (as of now)
 
 ### Core implementation
-- [x] whisper.cpp integration and binding layer
+- [x] MLX Whisper integration and binding layer
 - [x] model management + download progress flow
 - [x] real permission handling (microphone + screen recording)
 - [x] end-to-end recording coordinator flow wired to app state

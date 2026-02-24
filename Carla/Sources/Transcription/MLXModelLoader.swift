@@ -87,7 +87,7 @@ public actor MLXModelLoader {
     return modelsDirectory.appendingPathComponent(fileName)
   }
 
-  /// Returns the canonical file name for a whisper legacy model.
+  /// Returns the canonical file name for a legacy ggml profile model.
   public func modelFileName(for model: ASRModelProfile) -> String {
     switch model {
     case .base:
@@ -113,7 +113,7 @@ public actor MLXModelLoader {
     return fileManager.fileExists(atPath: path.path)
   }
 
-  /// Returns information about a specific legacy model file.
+  /// Returns information about a specific legacy profile model file.
   public func modelInfo(for model: ASRModelProfile) -> ModelFile {
     let url = modelFilePath(for: model)
     let exists = fileManager.fileExists(atPath: url.path)

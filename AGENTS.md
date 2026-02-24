@@ -9,7 +9,7 @@
 - **Language:** Swift
 - **UI:** SwiftUI (menu bar app via `MenuBarExtra`)
 - **Audio Capture:** Core Audio / AVFoundation (virtual audio device for system audio tap)
-- **Transcription:** Whisper.cpp (local, on-device)
+- **Transcription:** MLX Whisper (local, on-device)
 - **AI Summarization:** llama.cpp (local LLM inference, cross-platform: macOS + iOS)
 - **Storage:** SQLite (via GRDB or SwiftData) + local audio files
 - **Build:** Xcode, Swift Package Manager
@@ -26,7 +26,7 @@ carla/
 │   ├── Sources/
 │   │   ├── App/           # SwiftUI App entry, MenuBarExtra
 │   │   ├── Audio/         # Audio capture, virtual device, tap
-│   │   ├── Transcription/ # Whisper.cpp integration
+│   │   ├── Transcription/ # MLX Whisper integration
 │   │   ├── AI/            # Summarization, action items, LLM
 │   │   ├── Models/        # Data models (Meeting, Transcript, etc.)
 │   │   ├── Storage/       # SQLite / SwiftData persistence
@@ -153,7 +153,7 @@ Carla sits between the microphone and the meeting app:
 
 | Dependency | Purpose | Integration |
 |---|---|---|
-| whisper.cpp | Local transcription | SPM / embedded binary |
+| MLX Whisper (`mlx-whisper`) | Local transcription | Python runtime bridge + model artifacts |
 | ScreenCaptureKit | System audio capture | Native framework |
 | EventKit | Calendar integration | Native framework |
 | SwiftData/GRDB | Local persistence | SPM |

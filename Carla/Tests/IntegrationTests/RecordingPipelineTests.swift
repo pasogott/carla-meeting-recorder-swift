@@ -25,7 +25,7 @@ final class RecordingPipelineTests: XCTestCase {
 
   /// Test: Start transcription job → ingest audio packets → verify transcript segments produced
   func testTranscriptionPipelineProducesSegments() async throws {
-    // Setup mock whisper engine with predictable output
+    // Setup mock transcription engine with predictable output
     let mockEngine = MockWhisperEngine(
       mode: .custom(
         stream: { chunk, _, _ in
