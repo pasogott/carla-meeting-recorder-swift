@@ -83,7 +83,7 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(available)
   }
 
-  func testAreRequiredModelsUnavailableWhenChecksumIsMissingEvenIfArtifactExists() async throws {
+  func testAreRequiredModelsUnavailableWhenRequiredArtifactsAreMissing() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
@@ -95,7 +95,7 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(available)
   }
 
-  func testValidateModelReturnsFalseWhenArtifactChecksumsAreMissing() async throws {
+  func testValidateModelReturnsFalseWhenRequiredArtifactsAreMissing() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.base])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
@@ -107,14 +107,14 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(valid)
   }
 
-  func testValidationErrorReturnsMissingChecksumTaxonomy() async {
+  func testValidationErrorReturnsFirstMissingArtifactTaxonomy() async {
     let error = await modelManager.validationError(forModelID: "mlx-community/whisper-medium")
-    guard case .checksumMissing(let modelID, let relativePath)? = error else {
-      return XCTFail("Expected checksumMissing, got \(String(describing: error))")
+    guard case .fileMissing(let modelID, let path)? = error else {
+      return XCTFail("Expected fileMissing, got \(String(describing: error))")
     }
 
     XCTAssertEqual(modelID, "mlx-community/whisper-medium")
-    XCTAssertEqual(relativePath, "config.json")
+    XCTAssertEqual(path.lastPathComponent, "config.json")
   }
 
   // MARK: - Legacy Cleanup Gating
@@ -132,7 +132,7 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(isDirectory.boolValue)
   }
 
-  func testCleanupLegacyGGMLArtifactsDoesNotRunWhenArtifactExistsButChecksumMissing() async throws {
+  func testCleanupLegacyGGMLArtifactsDoesNotRunWhenModelArtifactsAreIncomplete() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,

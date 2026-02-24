@@ -236,7 +236,6 @@ public enum MLXModelCatalog {
 public enum MLXModelValidationError: Error, Sendable, Equatable {
   case unsupportedModelID(String)
   case artifactContractMissing(modelID: String, relativePath: String)
-  case checksumMissing(modelID: String, relativePath: String)
   case fileMissing(modelID: String, path: URL)
   case checksumComputationFailed(modelID: String, path: URL)
   case checksumMismatch(modelID: String, relativePath: String, expected: String, actual: String)
@@ -247,8 +246,6 @@ public enum MLXModelValidationError: Error, Sendable, Equatable {
       return "Unsupported model ID: \(modelID)"
     case .artifactContractMissing(let modelID, let relativePath):
       return "Artifact contract missing for \(modelID): \(relativePath)"
-    case .checksumMissing(let modelID, let relativePath):
-      return "Missing checksum for \(modelID): \(relativePath)"
     case .fileMissing(let modelID, let path):
       return "Required artifact missing for \(modelID): \(path.lastPathComponent)"
     case .checksumComputationFailed(let modelID, let path):
@@ -265,6 +262,12 @@ public actor MLXModelManager {
 
   /// Per-model producer tasks.
   private var downloadTasks: [String: Task<Void, Never>] = [:]
+
+  /// Cached Hugging Face checksums per modelID and artifact relative path.
+  private var hostedChecksumsByModelID: [String: [String: String]] = [:]
+
+  /// Last failed checksum metadata fetch per modelID (used for retry backoff).
+  private var hostedChecksumLastFetchFailureByModelID: [String: Date] = [:]
 
   public init(modelLoader: MLXModelLoader = MLXModelLoader()) {
     self.modelLoader = modelLoader
@@ -398,7 +401,7 @@ public actor MLXModelManager {
           continuation: continuation
         )
 
-        downloadedBytes += result.bytesDownloaded
+        downloadedBytes += result.bytesDelta
       }
 
       try atomicallyFinalizeModel(fromStaging: stagingURL, to: destinationURL)
@@ -429,7 +432,8 @@ public actor MLXModelManager {
   }
 
   private struct ArtifactDownloadResult {
-    let bytesDownloaded: Int64
+    /// Net change to total staged bytes for this artifact relative to pre-download state.
+    let bytesDelta: Int64
   }
 
   enum ModelDownloadErrorCategory: String, Sendable {
@@ -440,7 +444,6 @@ public actor MLXModelManager {
     case corruptedArtifacts
     case invalidResponse
     case invalidManifestPath
-    case invalidManifestIntegrity
     case unknown
   }
 
@@ -464,8 +467,6 @@ public actor MLXModelManager {
         return "Download failed: invalid server response."
       case .invalidManifestPath:
         return "Download failed due to invalid artifact path in manifest."
-      case .invalidManifestIntegrity:
-        return "Download blocked: artifact checksum metadata is missing or invalid."
       case .unknown:
         return "Download failed: \(detail)"
       }
@@ -532,12 +533,7 @@ public actor MLXModelManager {
     let fileManager = FileManager.default
     try ensureDirectory(at: artifactURL.deletingLastPathComponent())
 
-    guard let expectedChecksum = normalizedChecksum(artifact.checksumSHA256) else {
-      throw CategorizedDownloadError(
-        category: .invalidManifestIntegrity,
-        detail: "Missing/invalid checksum for \(artifact.relativePath)"
-      )
-    }
+    let expectedChecksum = await resolvedChecksum(for: artifact, modelID: modelID)
 
     let partialURL = artifactURL.appendingPathExtension("partial")
     let resumedBytes = fileManager.fileExists(atPath: partialURL.path) ? fileSize(at: partialURL) : 0
@@ -552,17 +548,40 @@ public actor MLXModelManager {
       throw CategorizedDownloadError(category: .invalidResponse, detail: "non-http response")
     }
 
+    if http.statusCode == 416, resumedBytes > 0 {
+      // Stale/invalid partial range. Reset partial and retry with full download.
+      if fileManager.fileExists(atPath: partialURL.path) {
+        try fileManager.removeItem(at: partialURL)
+      }
+
+      return try await downloadArtifact(
+        artifact,
+        to: artifactURL,
+        modelID: modelID,
+        model: model,
+        alreadyDownloadedBytes: max(0, alreadyDownloadedBytes - resumedBytes),
+        continuation: continuation
+      )
+    }
+
     guard http.statusCode == 200 || http.statusCode == 206 else {
       throw CategorizedDownloadError(category: .httpStatusFailure, detail: "HTTP \(http.statusCode)")
     }
 
     let appending = http.statusCode == 206 && resumedBytes > 0
+    let downloadedBeforeCurrentArtifact = max(0, alreadyDownloadedBytes - resumedBytes)
+    let progressBaselineBytes = downloadedBeforeCurrentArtifact + (appending ? resumedBytes : 0)
+
+    let parsedContentRange = parseContentRange(http.value(forHTTPHeaderField: "Content-Range"))
+    if appending {
+      guard let parsedContentRange, parsedContentRange.start == resumedBytes else {
+        throw CategorizedDownloadError(category: .invalidResponse, detail: "unexpected content-range")
+      }
+    }
+
     let expectedArtifactBytes: Int64? = {
-      if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
-        let totalPart = contentRange.split(separator: "/").last,
-        let parsedTotal = Int64(totalPart)
-      {
-        return parsedTotal
+      if let parsedContentRange {
+        return parsedContentRange.total
       }
 
       if http.expectedContentLength > 0 {
@@ -576,7 +595,9 @@ public actor MLXModelManager {
       try fileManager.removeItem(at: partialURL)
     }
 
-    fileManager.createFile(atPath: partialURL.path, contents: nil)
+    if !fileManager.fileExists(atPath: partialURL.path) {
+      fileManager.createFile(atPath: partialURL.path, contents: nil)
+    }
     let handle = try FileHandle(forWritingTo: partialURL)
     defer { try? handle.close() }
 
@@ -586,7 +607,7 @@ public actor MLXModelManager {
       try handle.truncate(atOffset: 0)
     }
 
-    var written = resumedBytes
+    var newlyDownloadedBytes: Int64 = 0
     var buffer = Data()
     let flushThreshold = 64 * 1024
 
@@ -596,15 +617,15 @@ public actor MLXModelManager {
 
       if buffer.count >= flushThreshold {
         try handle.write(contentsOf: buffer)
-        written += Int64(buffer.count)
+        newlyDownloadedBytes += Int64(buffer.count)
         buffer.removeAll(keepingCapacity: true)
 
         continuation.yield(
           ModelDownloadProgress(
             model: model,
             modelID: modelID,
-            bytesDownloaded: alreadyDownloadedBytes + written,
-            totalBytes: expectedArtifactBytes.map { alreadyDownloadedBytes + $0 }
+            bytesDownloaded: progressBaselineBytes + newlyDownloadedBytes,
+            totalBytes: expectedArtifactBytes.map { downloadedBeforeCurrentArtifact + $0 }
           )
         )
       }
@@ -612,11 +633,13 @@ public actor MLXModelManager {
 
     if !buffer.isEmpty {
       try handle.write(contentsOf: buffer)
-      written += Int64(buffer.count)
+      newlyDownloadedBytes += Int64(buffer.count)
     }
 
-    guard let actualChecksum = computeSHA256Hex(for: partialURL), actualChecksum == expectedChecksum else {
-      throw CategorizedDownloadError(category: .corruptedArtifacts, detail: artifact.relativePath)
+    if let expectedChecksum {
+      guard let actualChecksum = computeSHA256Hex(for: partialURL), actualChecksum == expectedChecksum else {
+        throw CategorizedDownloadError(category: .corruptedArtifacts, detail: artifact.relativePath)
+      }
     }
 
     if fileManager.fileExists(atPath: artifactURL.path) {
@@ -624,7 +647,8 @@ public actor MLXModelManager {
     }
     try fileManager.moveItem(at: partialURL, to: artifactURL)
 
-    return ArtifactDownloadResult(bytesDownloaded: written)
+    let bytesDelta = newlyDownloadedBytes - (appending ? 0 : resumedBytes)
+    return ArtifactDownloadResult(bytesDelta: bytesDelta)
   }
 
   private func safeArtifactURL(root: URL, relativePath: String) throws -> URL {
@@ -752,22 +776,18 @@ public actor MLXModelManager {
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
     )
-    return validateRequiredArtifacts(descriptor: descriptor, rootURL: modelRootURL)
+    return await validateRequiredArtifacts(descriptor: descriptor, rootURL: modelRootURL)
   }
 
   private func validateRequiredArtifacts(
     descriptor: MLXModelDescriptor,
     rootURL: URL
-  ) -> MLXModelValidationError? {
+  ) async -> MLXModelValidationError? {
     guard !descriptor.requiredArtifacts.isEmpty else {
       return .artifactContractMissing(modelID: descriptor.modelID, relativePath: "<empty-contract>")
     }
 
     for artifact in descriptor.requiredArtifacts {
-      guard let checksum = normalizedChecksum(artifact.checksumSHA256) else {
-        return .checksumMissing(modelID: descriptor.modelID, relativePath: artifact.relativePath)
-      }
-
       guard let artifactURL = try? safeArtifactURL(root: rootURL, relativePath: artifact.relativePath) else {
         return .artifactContractMissing(modelID: descriptor.modelID, relativePath: artifact.relativePath)
       }
@@ -776,21 +796,141 @@ public actor MLXModelManager {
         return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
       }
 
-      guard let actual = computeSHA256Hex(for: artifactURL) else {
-        return .checksumComputationFailed(modelID: descriptor.modelID, path: artifactURL)
-      }
+      let checksum = await resolvedChecksum(for: artifact, modelID: descriptor.modelID)
 
-      guard actual == checksum else {
-        return .checksumMismatch(
-          modelID: descriptor.modelID,
-          relativePath: artifact.relativePath,
-          expected: checksum,
-          actual: actual
-        )
+      // If checksum is available (manifest or Hugging Face metadata), enforce it.
+      // Otherwise keep a minimal plausibility guardrail.
+      if let checksum {
+        guard let actual = computeSHA256Hex(for: artifactURL) else {
+          return .checksumComputationFailed(modelID: descriptor.modelID, path: artifactURL)
+        }
+
+        guard actual == checksum else {
+          return .checksumMismatch(
+            modelID: descriptor.modelID,
+            relativePath: artifact.relativePath,
+            expected: checksum,
+            actual: actual
+          )
+        }
+      } else {
+        let artifactSize = fileSize(at: artifactURL)
+        guard artifactSize > 0 else {
+          return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
+        }
+
+        if artifact.relativePath == "model.bin",
+          !descriptor.expectedSizeBytes.contains(artifactSize)
+        {
+          return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
+        }
       }
     }
 
     return nil
+  }
+
+  private func resolvedChecksum(for artifact: MLXModelArtifact, modelID: String) async -> String? {
+    if let manifestChecksum = normalizedChecksum(artifact.checksumSHA256) {
+      return manifestChecksum
+    }
+
+    let hosted = await hostedChecksums(forModelID: modelID)
+    return hosted[artifact.relativePath]
+  }
+
+  private func hostedChecksums(forModelID modelID: String) async -> [String: String] {
+    if let cached = hostedChecksumsByModelID[modelID] {
+      return cached
+    }
+
+    if let lastFailure = hostedChecksumLastFetchFailureByModelID[modelID],
+      Date().timeIntervalSince(lastFailure) < 300
+    {
+      return [:]
+    }
+
+    guard let fetched = try? await fetchHostedChecksums(forModelID: modelID) else {
+      hostedChecksumLastFetchFailureByModelID[modelID] = Date()
+      return [:]
+    }
+
+    hostedChecksumLastFetchFailureByModelID.removeValue(forKey: modelID)
+    // Cache successful responses (including empty sets) to avoid repeated network fetches.
+    hostedChecksumsByModelID[modelID] = fetched
+    return fetched
+  }
+
+  private func fetchHostedChecksums(forModelID modelID: String) async throws -> [String: String] {
+    let apiURL = URL(string: "https://huggingface.co/api/models/\(modelID)")!
+    var request = URLRequest(url: apiURL)
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+      return [:]
+    }
+
+    let payload = try JSONDecoder().decode(HuggingFaceModelPayload.self, from: data)
+    var checksums: [String: String] = [:]
+
+    for sibling in payload.siblings {
+      guard let oid = sibling.lfs?.oid else { continue }
+      let normalizedOID = oid.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+      let sha: String
+      if normalizedOID.hasPrefix("sha256:") {
+        sha = String(normalizedOID.dropFirst("sha256:".count))
+      } else {
+        sha = normalizedOID
+      }
+      guard let normalized = normalizedChecksum(sha) else { continue }
+      checksums[sibling.rfilename] = normalized
+    }
+
+    return checksums
+  }
+
+  private struct HuggingFaceModelPayload: Decodable {
+    let siblings: [Sibling]
+
+    struct Sibling: Decodable {
+      let rfilename: String
+      let lfs: LFS?
+
+      struct LFS: Decodable {
+        let oid: String
+      }
+    }
+  }
+
+  private struct ParsedContentRange {
+    let start: Int64
+    let total: Int64
+  }
+
+  private func parseContentRange(_ headerValue: String?) -> ParsedContentRange? {
+    guard let headerValue else { return nil }
+
+    // Example: bytes 100-199/1000
+    let components = headerValue.split(separator: " ")
+    guard components.count == 2 else { return nil }
+
+    let rangeAndTotal = components[1].split(separator: "/")
+    guard rangeAndTotal.count == 2 else { return nil }
+
+    let bounds = rangeAndTotal[0].split(separator: "-")
+    guard bounds.count == 2,
+      let start = Int64(bounds[0]),
+      let end = Int64(bounds[1]),
+      let total = Int64(rangeAndTotal[1]),
+      start >= 0,
+      end >= start,
+      total > 0
+    else {
+      return nil
+    }
+
+    return ParsedContentRange(start: start, total: total)
   }
 
   private func normalizedChecksum(_ value: String?) -> String? {
