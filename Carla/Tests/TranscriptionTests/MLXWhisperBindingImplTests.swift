@@ -127,6 +127,42 @@ final class MLXWhisperBindingImplTests: XCTestCase {
     }
   }
 
+  func testBundledRuntimePathResolverFailsWhenRuntimeRootIsMissing() throws {
+    let missingRoot = tempDirectory.appendingPathComponent("MissingMLXRuntime", isDirectory: true)
+    let resolver = MLXBundledRuntimePathResolver(
+      environment: [MLXBundledRuntimePathResolver.runtimeRootEnvironmentKey: missingRoot.path],
+      bundleResourceURL: nil
+    )
+
+    XCTAssertThrowsError(try resolver.resolve()) { error in
+      guard case let MLXWhisperLibraryError.runtimeFailure(message) = error else {
+        return XCTFail("Expected runtime failure, got \(error)")
+      }
+      XCTAssertTrue(message.contains("runtime root not found"))
+      XCTAssertTrue(message.contains(missingRoot.path))
+    }
+  }
+
+  func testBundledRuntimePathResolverFailsWhenPythonExecutableIsMissing() throws {
+    let runtimeRoot = tempDirectory.appendingPathComponent("MLXRuntime", isDirectory: true)
+    let sitePackages = runtimeRoot.appendingPathComponent("site-packages", isDirectory: true)
+    let mlxWhisper = sitePackages.appendingPathComponent("mlx_whisper", isDirectory: true)
+    try FileManager.default.createDirectory(at: mlxWhisper, withIntermediateDirectories: true)
+
+    let resolver = MLXBundledRuntimePathResolver(
+      environment: [MLXBundledRuntimePathResolver.runtimeRootEnvironmentKey: runtimeRoot.path],
+      bundleResourceURL: nil
+    )
+
+    XCTAssertThrowsError(try resolver.resolve()) { error in
+      guard case let MLXWhisperLibraryError.runtimeFailure(message) = error else {
+        return XCTFail("Expected runtime failure, got \(error)")
+      }
+      XCTAssertTrue(message.contains("python executable"))
+      XCTAssertTrue(message.contains(runtimeRoot.path))
+    }
+  }
+
   private func makeModelReady(modelID: String) async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByID[modelID])
     let modelURL = await modelLoader.modelFilePath(
