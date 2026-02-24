@@ -367,127 +367,48 @@ public actor MLXModelManager {
         forModelID: descriptor.modelID,
         cacheFileName: descriptor.cacheFileName
       )
-      let partialURL = destinationURL.appendingPathExtension("partial")
+      let stagingURL = destinationURL.appendingPathExtension("staging")
 
-      var resumedBytes: Int64 = 0
-      if FileManager.default.fileExists(atPath: partialURL.path) {
-        let attrs = try FileManager.default.attributesOfItem(atPath: partialURL.path)
-        resumedBytes = attrs[.size] as? Int64 ?? 0
-      }
+      try ensureDirectory(at: stagingURL)
 
-      var request = URLRequest(url: descriptor.downloadURL)
-      if resumedBytes > 0 {
-        request.setValue("bytes=\(resumedBytes)-", forHTTPHeaderField: "Range")
-      }
-
-      let (bytes, response) = try await URLSession.shared.bytes(for: request)
-      guard let http = response as? HTTPURLResponse else {
-        continuation.yield(ModelDownloadProgress(modelID: descriptor.modelID, error: "Invalid response"))
-        continuation.finish()
-        return
-      }
-
-      guard http.statusCode == 200 || http.statusCode == 206 else {
-        continuation.yield(
-          ModelDownloadProgress(modelID: descriptor.modelID, error: "HTTP error: \(http.statusCode)")
-        )
-        continuation.finish()
-        return
-      }
-
-      let appending = http.statusCode == 206 && resumedBytes > 0
-      if !appending, FileManager.default.fileExists(atPath: partialURL.path) {
-        try FileManager.default.removeItem(at: partialURL)
-      }
-
-      FileManager.default.createFile(atPath: partialURL.path, contents: nil)
-      guard let handle = try? FileHandle(forWritingTo: partialURL) else {
-        continuation.yield(ModelDownloadProgress(modelID: descriptor.modelID, error: "Unable to open cache file"))
-        continuation.finish()
-        return
-      }
-      defer { try? handle.close() }
-
-      if appending {
-        try handle.seekToEnd()
-      } else {
-        try handle.truncate(atOffset: 0)
-      }
-
-      let contentLength = response.expectedContentLength
-      let totalBytes: Int64?
-      if contentLength > 0 {
-        totalBytes = appending ? resumedBytes + contentLength : contentLength
-      } else {
-        totalBytes = nil
-      }
-
-      var writtenBytes = resumedBytes
+      var downloadedBytes = try existingDownloadedBytes(in: stagingURL, artifacts: descriptor.requiredArtifacts)
       continuation.yield(
         ModelDownloadProgress(
           model: descriptor.profile,
           modelID: descriptor.modelID,
-          bytesDownloaded: writtenBytes,
-          totalBytes: totalBytes
+          bytesDownloaded: downloadedBytes,
+          totalBytes: nil
         )
       )
 
-      var buffer = Data()
-      let flushThreshold = 64 * 1024
-
-      for try await byte in bytes {
+      for artifact in descriptor.requiredArtifacts {
         try Task.checkCancellation()
-        buffer.append(byte)
 
-        if buffer.count >= flushThreshold {
-          try handle.write(contentsOf: buffer)
-          writtenBytes += Int64(buffer.count)
-          buffer.removeAll(keepingCapacity: true)
-
-          continuation.yield(
-            ModelDownloadProgress(
-              model: descriptor.profile,
-              modelID: descriptor.modelID,
-              bytesDownloaded: writtenBytes,
-              totalBytes: totalBytes
-            )
-          )
+        let artifactURL = try safeArtifactURL(root: stagingURL, relativePath: artifact.relativePath)
+        if FileManager.default.fileExists(atPath: artifactURL.path) {
+          continue
         }
-      }
 
-      if !buffer.isEmpty {
-        try handle.write(contentsOf: buffer)
-        writtenBytes += Int64(buffer.count)
-      }
-
-      if let validationError = validatePrimaryArtifact(descriptor: descriptor, artifactURL: partialURL) {
-        try? FileManager.default.removeItem(at: partialURL)
-        continuation.yield(
-          ModelDownloadProgress(
-            model: descriptor.profile,
-            modelID: descriptor.modelID,
-            bytesDownloaded: writtenBytes,
-            totalBytes: totalBytes,
-            error: validationError.message
-          )
+        let result = try await downloadArtifact(
+          artifact,
+          to: artifactURL,
+          modelID: descriptor.modelID,
+          model: descriptor.profile,
+          alreadyDownloadedBytes: downloadedBytes,
+          continuation: continuation
         )
-        continuation.finish()
-        return
+
+        downloadedBytes += result.bytesDownloaded
       }
 
-      try await modelLoader.registerModelID(
-        descriptor.modelID,
-        cacheFileName: descriptor.cacheFileName,
-        from: partialURL,
-        copy: false
-      )
+      try atomicallyFinalizeModel(fromStaging: stagingURL, to: destinationURL)
 
       continuation.yield(
         ModelDownloadProgress(
           model: descriptor.profile,
           modelID: descriptor.modelID,
-          bytesDownloaded: writtenBytes,
-          totalBytes: max(totalBytes ?? 0, writtenBytes),
+          bytesDownloaded: downloadedBytes,
+          totalBytes: downloadedBytes,
           isComplete: true
         )
       )
@@ -495,9 +416,247 @@ public actor MLXModelManager {
     } catch is CancellationError {
       continuation.finish()
     } catch {
-      continuation.yield(ModelDownloadProgress(modelID: descriptor.modelID, error: error.localizedDescription))
+      let categorized = categorizeDownloadError(error)
+      continuation.yield(
+        ModelDownloadProgress(
+          model: descriptor.profile,
+          modelID: descriptor.modelID,
+          error: categorized.message
+        )
+      )
       continuation.finish()
     }
+  }
+
+  private struct ArtifactDownloadResult {
+    let bytesDownloaded: Int64
+  }
+
+  enum ModelDownloadErrorCategory: String, Sendable {
+    case networkUnreachable
+    case httpStatusFailure
+    case diskFull
+    case permissionDenied
+    case corruptedArtifacts
+    case invalidResponse
+    case invalidManifestPath
+    case unknown
+  }
+
+  struct CategorizedDownloadError: Error {
+    let category: ModelDownloadErrorCategory
+    let detail: String
+
+    var message: String {
+      switch category {
+      case .networkUnreachable:
+        return "Network unreachable while downloading model artifacts. Check your connection and retry."
+      case .httpStatusFailure:
+        return "Model artifact download failed due to server response. Retry in a few minutes."
+      case .diskFull:
+        return "Download failed: not enough disk space for model artifacts. Free space and retry."
+      case .permissionDenied:
+        return "Download failed: insufficient permissions to write model artifacts."
+      case .corruptedArtifacts:
+        return "Downloaded artifacts appear corrupted. Delete model files and retry."
+      case .invalidResponse:
+        return "Download failed: invalid server response."
+      case .invalidManifestPath:
+        return "Download failed due to invalid artifact path in manifest."
+      case .unknown:
+        return "Download failed: \(detail)"
+      }
+    }
+  }
+
+  private func categorizeDownloadError(_ error: Error) -> CategorizedDownloadError {
+    if let categorized = error as? CategorizedDownloadError {
+      return categorized
+    }
+
+    if let urlError = error as? URLError {
+      switch urlError.code {
+      case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+           .internationalRoamingOff, .callIsActive, .dataNotAllowed, .timedOut:
+        return CategorizedDownloadError(category: .networkUnreachable, detail: urlError.localizedDescription)
+      case .noPermissionsToReadFile, .userAuthenticationRequired, .userCancelledAuthentication:
+        return CategorizedDownloadError(category: .permissionDenied, detail: urlError.localizedDescription)
+      default:
+        return CategorizedDownloadError(category: .unknown, detail: urlError.localizedDescription)
+      }
+    }
+
+    let nsError = error as NSError
+    if nsError.domain == NSCocoaErrorDomain {
+      switch nsError.code {
+      case NSFileWriteOutOfSpaceError:
+        return CategorizedDownloadError(category: .diskFull, detail: nsError.localizedDescription)
+      case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
+        return CategorizedDownloadError(category: .permissionDenied, detail: nsError.localizedDescription)
+      default:
+        break
+      }
+    }
+
+    return CategorizedDownloadError(category: .unknown, detail: nsError.localizedDescription)
+  }
+
+  private func existingDownloadedBytes(in stagingRoot: URL, artifacts: [MLXModelArtifact]) throws -> Int64 {
+    var total: Int64 = 0
+    for artifact in artifacts {
+      let artifactURL = try safeArtifactURL(root: stagingRoot, relativePath: artifact.relativePath)
+      if FileManager.default.fileExists(atPath: artifactURL.path) {
+        total += fileSize(at: artifactURL)
+        continue
+      }
+
+      let partial = artifactURL.appendingPathExtension("partial")
+      if FileManager.default.fileExists(atPath: partial.path) {
+        total += fileSize(at: partial)
+      }
+    }
+    return total
+  }
+
+  private func downloadArtifact(
+    _ artifact: MLXModelArtifact,
+    to artifactURL: URL,
+    modelID: String,
+    model: ASRModelProfile,
+    alreadyDownloadedBytes: Int64,
+    continuation: AsyncStream<ModelDownloadProgress>.Continuation
+  ) async throws -> ArtifactDownloadResult {
+    let fileManager = FileManager.default
+    try ensureDirectory(at: artifactURL.deletingLastPathComponent())
+
+    let partialURL = artifactURL.appendingPathExtension("partial")
+    let resumedBytes = fileManager.fileExists(atPath: partialURL.path) ? fileSize(at: partialURL) : 0
+
+    var request = URLRequest(url: artifact.sourceURL)
+    if resumedBytes > 0 {
+      request.setValue("bytes=\(resumedBytes)-", forHTTPHeaderField: "Range")
+    }
+
+    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+    guard let http = response as? HTTPURLResponse else {
+      throw CategorizedDownloadError(category: .invalidResponse, detail: "non-http response")
+    }
+
+    guard http.statusCode == 200 || http.statusCode == 206 else {
+      throw CategorizedDownloadError(category: .httpStatusFailure, detail: "HTTP \(http.statusCode)")
+    }
+
+    let appending = http.statusCode == 206 && resumedBytes > 0
+    if !appending, fileManager.fileExists(atPath: partialURL.path) {
+      try fileManager.removeItem(at: partialURL)
+    }
+
+    fileManager.createFile(atPath: partialURL.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: partialURL)
+    defer { try? handle.close() }
+
+    if appending {
+      try handle.seekToEnd()
+    } else {
+      try handle.truncate(atOffset: 0)
+    }
+
+    var written = resumedBytes
+    var buffer = Data()
+    let flushThreshold = 64 * 1024
+
+    for try await byte in bytes {
+      try Task.checkCancellation()
+      buffer.append(byte)
+
+      if buffer.count >= flushThreshold {
+        try handle.write(contentsOf: buffer)
+        written += Int64(buffer.count)
+        buffer.removeAll(keepingCapacity: true)
+
+        continuation.yield(
+          ModelDownloadProgress(
+            model: model,
+            modelID: modelID,
+            bytesDownloaded: alreadyDownloadedBytes + written,
+            totalBytes: nil
+          )
+        )
+      }
+    }
+
+    if !buffer.isEmpty {
+      try handle.write(contentsOf: buffer)
+      written += Int64(buffer.count)
+    }
+
+    if let expectedChecksum = normalizedChecksum(artifact.checksumSHA256) {
+      guard let actualChecksum = computeSHA256Hex(for: partialURL), actualChecksum == expectedChecksum else {
+        throw CategorizedDownloadError(category: .corruptedArtifacts, detail: artifact.relativePath)
+      }
+    }
+
+    if fileManager.fileExists(atPath: artifactURL.path) {
+      try fileManager.removeItem(at: artifactURL)
+    }
+    try fileManager.moveItem(at: partialURL, to: artifactURL)
+
+    return ArtifactDownloadResult(bytesDownloaded: written)
+  }
+
+  private func safeArtifactURL(root: URL, relativePath: String) throws -> URL {
+    let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+      !trimmed.hasPrefix("/"),
+      !trimmed.split(separator: "/").contains("..")
+    else {
+      throw CategorizedDownloadError(category: .invalidManifestPath, detail: relativePath)
+    }
+
+    return root.appendingPathComponent(trimmed)
+  }
+
+  private func ensureDirectory(at url: URL) throws {
+    var isDirectory = ObjCBool(false)
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+      if isDirectory.boolValue { return }
+      try FileManager.default.removeItem(at: url)
+    }
+
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+  }
+
+  private func atomicallyFinalizeModel(fromStaging stagingURL: URL, to destinationURL: URL) throws {
+    let fileManager = FileManager.default
+    let backupURL = destinationURL.appendingPathExtension("backup")
+
+    if fileManager.fileExists(atPath: backupURL.path) {
+      try fileManager.removeItem(at: backupURL)
+    }
+
+    if fileManager.fileExists(atPath: destinationURL.path) {
+      try fileManager.moveItem(at: destinationURL, to: backupURL)
+    }
+
+    do {
+      try fileManager.moveItem(at: stagingURL, to: destinationURL)
+      if fileManager.fileExists(atPath: backupURL.path) {
+        try fileManager.removeItem(at: backupURL)
+      }
+    } catch {
+      if fileManager.fileExists(atPath: destinationURL.path) {
+        try? fileManager.removeItem(at: destinationURL)
+      }
+      if fileManager.fileExists(atPath: backupURL.path) {
+        try? fileManager.moveItem(at: backupURL, to: destinationURL)
+      }
+      throw error
+    }
+  }
+
+  private func fileSize(at url: URL) -> Int64 {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+    return attrs?[.size] as? Int64 ?? 0
   }
 
   public func downloadRequiredModels() -> AsyncStream<ModelDownloadProgress> {
