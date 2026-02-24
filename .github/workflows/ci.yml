@@ -31,6 +31,16 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Guardrail: no legacy backend package refs
+        run: |
+          set -euo pipefail
+          if rg -n "CPPBindingImpl|CPPIntegration|ggerganov" \
+            Carla/Sources Carla/Tests Carla/Package.swift Carla/Package.resolved \
+            Carla/Carla.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved; then
+            echo "Found disallowed legacy backend references" >&2
+            exit 1
+          fi
+
       - name: Install swift-format (lint tool)
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"

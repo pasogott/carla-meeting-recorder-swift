@@ -37,6 +37,16 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Guardrail: no legacy backend package refs
+        run: |
+          set -euo pipefail
+          if rg -n "CPPBindingImpl|CPPIntegration|ggerganov" \
+            Carla/Sources Carla/Tests Carla/Package.swift Carla/Package.resolved \
+            Carla/Carla.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved; then
+            echo "Found disallowed legacy backend references" >&2
+            exit 1
+          fi
+
       - name: Install swift-format (lint tool)
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -65,6 +75,14 @@ jobs:
             -configuration Debug \
             -destination 'platform=macOS' \
             build
+
+      - name: Release hardening preflight (notarization script + ASR gate report)
+        run: |
+          set -euo pipefail
+          bash -n scripts/sign-and-notarize.sh
+          chmod +x scripts/validate-asr-rollout.sh
+          ASR_GATE_MIN_SAMPLES=0 ASR_VALIDATION_REPORT_PATH="$RUNNER_TEMP/asr-validation-report.json" \
+            scripts/validate-asr-rollout.sh
 
   build-dmg:
     needs: ci

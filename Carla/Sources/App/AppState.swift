@@ -79,7 +79,7 @@ struct AppSettings: Equatable {
 struct MLXModelOption: Equatable, Hashable, Identifiable {
   let id: String
   let label: String
-  let profile: WhisperModel
+  let profile: ASRModelProfile
 }
 
 // MARK: - Onboarding State
@@ -101,7 +101,7 @@ enum ModelDownloadStatus: Equatable {
 
 struct ModelDownloadState: Equatable {
   var status: ModelDownloadStatus = .idle
-  var currentModel: WhisperModel? = nil
+  var currentModel: ASRModelProfile? = nil
   var progress: Double = 0
   var progressText: String = ""
   var errorMessage: String? = nil
@@ -189,7 +189,7 @@ final class AppState: ObservableObject {
 
   private let storage: CarlaStorage?
   private let recordingCoordinator: RecordingCoordinator?
-  private let whisperModelManager: WhisperModelManager
+  private let modelManager: MLXModelManager
   private var cancellables = Set<AnyCancellable>()
   private var durationTimer: Timer?
   private var downloadTask: Task<Void, Never>?
@@ -201,6 +201,55 @@ final class AppState: ObservableObject {
 
   private enum DefaultsKey {
     static let onboardingCompleted = "at.cyberheld.carla.onboarding_completed"
+  }
+
+  private struct ASRRolloutConfiguration {
+    let rollbackEnabled: Bool
+    let shadowEnabled: Bool
+    let shadowSampleRate: Double
+    let burnInEndDate: Date?
+
+    static func fromEnvironment(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+      let rollbackEnabled = parseBool(environment["CARLA_ASR_ROLLBACK_ENABLE"])
+      let sampleRate = min(max(Double(environment["CARLA_ASR_SHADOW_SAMPLE_RATE"] ?? "0.10") ?? 0.10, 0), 1)
+      let burnInEndDate = parseDate(environment["CARLA_ASR_BURN_IN_END"])
+
+      let insideBurnInWindow: Bool = {
+        guard let burnInEndDate else { return true }
+        return Date() <= burnInEndDate
+      }()
+
+      let shadowEnabled = !rollbackEnabled && insideBurnInWindow && sampleRate > 0
+      return Self(
+        rollbackEnabled: rollbackEnabled,
+        shadowEnabled: shadowEnabled,
+        shadowSampleRate: sampleRate,
+        burnInEndDate: burnInEndDate
+      )
+    }
+
+    func shouldSampleShadowRequest(random: Double = Double.random(in: 0...1)) -> Bool {
+      guard shadowEnabled else { return false }
+      return random <= shadowSampleRate
+    }
+
+    private static func parseBool(_ rawValue: String?) -> Bool {
+      guard let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+        return false
+      }
+      return ["1", "true", "yes", "on"].contains(value)
+    }
+
+    private static func parseDate(_ rawValue: String?) -> Date? {
+      guard let rawValue else { return nil }
+      let formatter = ISO8601DateFormatter()
+      formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+      if let date = formatter.date(from: rawValue) {
+        return date
+      }
+      formatter.formatOptions = [.withInternetDateTime]
+      return formatter.date(from: rawValue)
+    }
   }
 
   static let availableMLXModels: [MLXModelOption] = [
@@ -236,11 +285,11 @@ final class AppState: ObservableObject {
     permissionManager: PermissionManager? = nil,
     storage: CarlaStorage? = nil,
     recordingCoordinator: RecordingCoordinator? = nil,
-    whisperModelManager: WhisperModelManager? = nil,
+    modelManager: MLXModelManager? = nil,
     playbackService: AudioPlaybackService? = nil
   ) {
     self.permissionManager = permissionManager ?? PermissionManager()
-    self.whisperModelManager = whisperModelManager ?? WhisperModelManager()
+    self.modelManager = modelManager ?? MLXModelManager()
     self.playbackService = playbackService ?? AudioPlaybackService()
 
     // Initialize storage and coordinator
@@ -253,10 +302,30 @@ final class AppState: ObservableObject {
         let realStorage = try CarlaStorage()
         self.storage = realStorage
 
-        // Create transcription engine and orchestrator (whisper.cpp)
-        let binding = WhisperCPPBindingImpl(modelLoader: WhisperModelLoader())
-        let whisperEngine = WhisperCPPEngine(binding: binding)
-        let transcriptionOrchestrator = TranscriptionJobOrchestrator(engine: whisperEngine)
+        // Create transcription engine and orchestrator (MLX primary + optional burn-in shadow).
+        let rollout = ASRRolloutConfiguration.fromEnvironment()
+        let primaryBinding = MLXWhisperBindingImpl(modelManager: self.modelManager)
+        let primaryEngine = MLXWhisperEngine(binding: primaryBinding)
+
+        let shadowEngine: ASRTranscribingEngine? = rollout.shadowEnabled
+          ? MLXWhisperEngine(binding: MLXWhisperBindingImpl(modelManager: self.modelManager))
+          : nil
+
+        let shadowHarness: ShadowTranscriptionHarness? = rollout.shadowEnabled
+          ? ShadowTranscriptionHarness(
+            configuration: ShadowTranscriptionHarnessConfiguration(
+              artifactsDirectory: AppStoragePaths().baseDirectory
+                .appendingPathComponent("Diagnostics/TranscriptionShadow", isDirectory: true)
+            )
+          )
+          : nil
+
+        let transcriptionOrchestrator = TranscriptionJobOrchestrator(
+          engine: primaryEngine,
+          shadowEngine: shadowEngine,
+          shadowHarness: shadowHarness,
+          shouldRunShadow: { rollout.shouldSampleShadowRequest() }
+        )
 
         // Create recording coordinator
         let coordinator = RecordingCoordinator(
@@ -443,7 +512,7 @@ final class AppState: ObservableObject {
     modelDownload.status = .checking
     modelDownload.progressText = "Checking model availability..."
 
-    let modelsAvailable = await whisperModelManager.areRequiredModelsAvailable()
+    let modelsAvailable = await modelManager.areRequiredModelsAvailable()
 
     if modelsAvailable {
       modelDownload.status = .completed
@@ -488,7 +557,7 @@ final class AppState: ObservableObject {
     onboarding.modelsReady = false
 
     downloadTask = Task {
-      let stream = await whisperModelManager.downloadRequiredModels()
+      let stream = await modelManager.downloadRequiredModels()
       for await progress in stream {
         // Check for cancellation or superseded operation
         if Task.isCancelled { break }
@@ -519,7 +588,7 @@ final class AppState: ObservableObject {
         let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
         guard isCurrentOperation else { return }
 
-        let allReady = await whisperModelManager.areRequiredModelsAvailable()
+        let allReady = await modelManager.areRequiredModelsAvailable()
         await MainActor.run {
           guard self.downloadOperationID == operationID else { return }
           if allReady {
@@ -897,12 +966,12 @@ final class AppState: ObservableObject {
 
   private static func makeRecordingConfiguration(from settings: AppSettings) -> RecordingConfiguration {
     return RecordingConfiguration(
-      whisperModel: whisperModel(from: settings.selectedModel),
+      whisperModel: asrModel(from: settings.selectedModel),
       primaryLanguageCode: canonicalLanguageCode(from: settings.primaryLanguage)
     )
   }
 
-  private static func whisperModel(from selectedModelValue: String) -> WhisperModel {
+  private static func asrModel(from selectedModelValue: String) -> ASRModelProfile {
     let normalized = selectedModelValue
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()

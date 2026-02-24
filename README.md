@@ -8,7 +8,8 @@ It captures:
 
 Then it can:
 - persist recordings in a local SQLite database
-- run on-device transcription with whisper.cpp
+- run on-device transcription with MLX Whisper (Apple Silicon)
+- optionally run burn-in shadow capture for rollout validation
 - browse/search meetings and transcript segments
 - play back audio with timestamp navigation
 
@@ -116,6 +117,19 @@ Required GitHub secrets for signing:
 - `SPARKLE_PUBLIC_ED_KEY` (public EdDSA key embedded in app `Info.plist`)
 - `SPARKLE_PRIVATE_ED_KEY` (private EdDSA key used to sign Sparkle update archive)
 - `APP_STORE_CONNECT_API_KEY_P8`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` (for notarization)
+
+### ASR rollout controls (burn-in)
+Runtime cutover defaults to MLX primary.
+
+Optional environment flags:
+- `CARLA_ASR_SHADOW_SAMPLE_RATE` (0...1, default `0.10`)
+- `CARLA_ASR_BURN_IN_END` (ISO-8601 timestamp; disables shadow after this date)
+- `CARLA_ASR_ROLLBACK_ENABLE` (`1/true` disables burn-in shadow sampling)
+
+Validation script for release gates:
+```bash
+scripts/validate-asr-rollout.sh
+```
 
 ### Sparkle auto-updates
 Carla now includes Sparkle and exposes `Check for Updates…` in the menu.
