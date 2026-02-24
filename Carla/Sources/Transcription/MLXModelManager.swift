@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Tracks download progress for a single model transfer.
@@ -232,6 +233,32 @@ public enum MLXModelCatalog {
   }
 }
 
+public enum MLXModelValidationError: Error, Sendable, Equatable {
+  case unsupportedModelID(String)
+  case artifactContractMissing(modelID: String, relativePath: String)
+  case checksumMissing(modelID: String, relativePath: String)
+  case fileMissing(modelID: String, path: URL)
+  case checksumComputationFailed(modelID: String, path: URL)
+  case checksumMismatch(modelID: String, relativePath: String, expected: String, actual: String)
+
+  public var message: String {
+    switch self {
+    case .unsupportedModelID(let modelID):
+      return "Unsupported model ID: \(modelID)"
+    case .artifactContractMissing(let modelID, let relativePath):
+      return "Artifact contract missing for \(modelID): \(relativePath)"
+    case .checksumMissing(let modelID, let relativePath):
+      return "Missing checksum for \(modelID): \(relativePath)"
+    case .fileMissing(let modelID, let path):
+      return "Required artifact missing for \(modelID): \(path.lastPathComponent)"
+    case .checksumComputationFailed(let modelID, let path):
+      return "Unable to compute checksum for \(modelID): \(path.lastPathComponent)"
+    case .checksumMismatch(let modelID, let relativePath, let expected, let actual):
+      return "Checksum mismatch for \(modelID)/\(relativePath). Expected \(expected), got \(actual)"
+    }
+  }
+}
+
 /// Manages downloading, validating, and migrating managed MLX model artifacts.
 public actor MLXModelManager {
   private let modelLoader: MLXModelLoader
@@ -270,18 +297,9 @@ public actor MLXModelManager {
     var missing: [ASRModelProfile] = []
     for profile in Self.requiredModels {
       let modelID = MLXModelCatalog.modelID(for: profile)
-      guard let descriptor = MLXModelCatalog.descriptorByID[modelID] else {
+      guard await validationError(forModelID: modelID) == nil else {
         missing.append(profile)
         continue
-      }
-
-      let info = await modelLoader.modelInfo(
-        forModelID: descriptor.modelID,
-        cacheFileName: descriptor.cacheFileName
-      )
-
-      if !info.isAvailable || !descriptor.expectedSizeBytes.contains(info.sizeBytes ?? -1) {
-        missing.append(profile)
       }
     }
     return missing
@@ -442,14 +460,15 @@ public actor MLXModelManager {
         writtenBytes += Int64(buffer.count)
       }
 
-      guard descriptor.expectedSizeBytes.contains(writtenBytes) else {
+      if let validationError = validatePrimaryArtifact(descriptor: descriptor, artifactURL: partialURL) {
+        try? FileManager.default.removeItem(at: partialURL)
         continuation.yield(
           ModelDownloadProgress(
             model: descriptor.profile,
             modelID: descriptor.modelID,
             bytesDownloaded: writtenBytes,
             totalBytes: totalBytes,
-            error: "Downloaded file size (\(writtenBytes)) outside expected range"
+            error: validationError.message
           )
         )
         continuation.finish()
@@ -538,15 +557,83 @@ public actor MLXModelManager {
   }
 
   public func validateModelID(_ modelID: String) async -> Bool {
-    let canonical = MLXModelCatalog.resolveModelID(fromSettingsValue: modelID)
-    guard let descriptor = MLXModelCatalog.descriptorByID[canonical] else { return false }
+    await validationError(forModelID: modelID) == nil
+  }
 
-    let info = await modelLoader.modelInfo(
+  public func validationError(forModelID modelID: String) async -> MLXModelValidationError? {
+    let canonical = MLXModelCatalog.resolveModelID(fromSettingsValue: modelID)
+    guard let descriptor = MLXModelCatalog.descriptorByID[canonical] else {
+      return .unsupportedModelID(canonical)
+    }
+
+    let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
     )
-    guard info.isAvailable, let size = info.sizeBytes else { return false }
-    return descriptor.expectedSizeBytes.contains(size)
+    return validatePrimaryArtifact(descriptor: descriptor, artifactURL: modelURL)
+  }
+
+  private func validatePrimaryArtifact(
+    descriptor: MLXModelDescriptor,
+    artifactURL: URL
+  ) -> MLXModelValidationError? {
+    guard let primaryArtifact = descriptor.requiredArtifacts.first(where: { $0.relativePath == "model.bin" }) else {
+      return .artifactContractMissing(modelID: descriptor.modelID, relativePath: "model.bin")
+    }
+
+    guard let checksum = normalizedChecksum(primaryArtifact.checksumSHA256) else {
+      return .checksumMissing(modelID: descriptor.modelID, relativePath: primaryArtifact.relativePath)
+    }
+
+    guard FileManager.default.fileExists(atPath: artifactURL.path) else {
+      return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
+    }
+
+    guard let actual = computeSHA256Hex(for: artifactURL) else {
+      return .checksumComputationFailed(modelID: descriptor.modelID, path: artifactURL)
+    }
+
+    guard actual == checksum else {
+      return .checksumMismatch(
+        modelID: descriptor.modelID,
+        relativePath: primaryArtifact.relativePath,
+        expected: checksum,
+        actual: actual
+      )
+    }
+
+    return nil
+  }
+
+  private func normalizedChecksum(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalized.count == 64 else { return nil }
+    guard normalized.allSatisfy({ $0.isHexDigit }) else { return nil }
+    return normalized
+  }
+
+  private func computeSHA256Hex(for url: URL) -> String? {
+    guard let stream = InputStream(url: url) else { return nil }
+    stream.open()
+    defer { stream.close() }
+
+    var hasher = SHA256()
+    var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+
+    while stream.hasBytesAvailable {
+      let read = stream.read(&buffer, maxLength: buffer.count)
+      if read < 0 {
+        return nil
+      }
+      if read == 0 {
+        break
+      }
+      hasher.update(data: Data(buffer.prefix(read)))
+    }
+
+    let digest = hasher.finalize()
+    return digest.map { String(format: "%02x", $0) }.joined()
   }
 
   public func removeModel(_ model: ASRModelProfile) async throws {
