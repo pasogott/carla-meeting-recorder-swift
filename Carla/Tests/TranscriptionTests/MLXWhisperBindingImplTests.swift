@@ -26,8 +26,6 @@ final class MLXWhisperBindingImplTests: XCTestCase {
   }
 
   func testTranscribePCMReturnsNonEmptySegmentsFromRuntimeFixture() async throws {
-    try await makeModelReady(modelID: "mlx-community/whisper-base")
-
     let runtime = FixtureRuntime(
       response: MLXRuntimeTranscription(
         detectedLanguageCode: "de",
@@ -37,7 +35,11 @@ final class MLXWhisperBindingImplTests: XCTestCase {
       )
     )
 
-    let binding = MLXWhisperBindingImpl(modelManager: modelManager, runtime: runtime)
+    let binding = MLXWhisperBindingImpl(
+      modelManager: modelManager,
+      runtime: runtime,
+      modelReadiness: { _ in true }
+    )
     let samples = (0..<1_600).map { i in sin(Float(i) * 0.05) * 0.2 }
 
     let payload = try await binding.transcribePCM(
@@ -59,8 +61,6 @@ final class MLXWhisperBindingImplTests: XCTestCase {
   }
 
   func testTranscribeFileReturnsFixtureSegments() async throws {
-    try await makeModelReady(modelID: "mlx-community/whisper-small")
-
     let fixtureFile = tempDirectory.appendingPathComponent("fixture.wav")
     try Data([0x00, 0x01, 0x02]).write(to: fixtureFile)
 
@@ -73,7 +73,11 @@ final class MLXWhisperBindingImplTests: XCTestCase {
       )
     )
 
-    let binding = MLXWhisperBindingImpl(modelManager: modelManager, runtime: runtime)
+    let binding = MLXWhisperBindingImpl(
+      modelManager: modelManager,
+      runtime: runtime,
+      modelReadiness: { _ in true }
+    )
     let payload = try await binding.transcribeFile(
       fileURL: fixtureFile,
       modelID: "mlx-community/whisper-small",
@@ -87,13 +91,15 @@ final class MLXWhisperBindingImplTests: XCTestCase {
   }
 
   func testTranscribeMapsUnsupportedLanguageDeterministically() async throws {
-    try await makeModelReady(modelID: "mlx-community/whisper-base")
-
     let runtime = FixtureRuntime(
       error: MLXWhisperLibraryError.libraryFailure(code: 2, message: "Unsupported language: FR")
     )
 
-    let binding = MLXWhisperBindingImpl(modelManager: modelManager, runtime: runtime)
+    let binding = MLXWhisperBindingImpl(
+      modelManager: modelManager,
+      runtime: runtime,
+      modelReadiness: { _ in true }
+    )
 
     do {
       _ = try await binding.transcribePCM(
@@ -112,7 +118,11 @@ final class MLXWhisperBindingImplTests: XCTestCase {
     let runtime = FixtureRuntime(
       response: MLXRuntimeTranscription(detectedLanguageCode: "en", segments: [])
     )
-    let binding = MLXWhisperBindingImpl(modelManager: modelManager, runtime: runtime)
+    let binding = MLXWhisperBindingImpl(
+      modelManager: modelManager,
+      runtime: runtime,
+      modelReadiness: { _ in false }
+    )
 
     do {
       _ = try await binding.transcribePCM(
@@ -163,18 +173,6 @@ final class MLXWhisperBindingImplTests: XCTestCase {
     }
   }
 
-  private func makeModelReady(modelID: String) async throws {
-    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByID[modelID])
-    let modelURL = await modelLoader.modelFilePath(
-      forModelID: descriptor.modelID,
-      cacheFileName: descriptor.cacheFileName
-    )
-
-    FileManager.default.createFile(atPath: modelURL.path, contents: nil)
-    let handle = try FileHandle(forWritingTo: modelURL)
-    defer { try? handle.close() }
-    try handle.truncate(atOffset: UInt64(descriptor.expectedSizeBytes.lowerBound))
-  }
 }
 
 private actor FixtureRuntime: MLXWhisperRuntime {
