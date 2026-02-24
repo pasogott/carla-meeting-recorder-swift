@@ -172,9 +172,11 @@ public struct MLXWhisperEngine: ASRTranscribingEngine {
       case .invalidAudio, .decodeFailure:
         return .decodingFailed
       case .libraryFailure(let code, let message):
-        return .runtimeFailure("mlx-library(\(code)): \(message)")
+        let guidance = MLXErrorUX.guidance(for: message)
+        return .runtimeFailure("\(guidance.title): \(guidance.recovery) [mlx-library(\(code))]")
       case .runtimeFailure(let message):
-        return .runtimeFailure(message)
+        let guidance = MLXErrorUX.guidance(for: message)
+        return .runtimeFailure("\(guidance.title): \(guidance.recovery)")
       }
     }
 

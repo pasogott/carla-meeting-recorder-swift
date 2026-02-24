@@ -254,10 +254,24 @@ private struct OnboardingSettingsTab: View {
             .foregroundStyle(modelStatusColor)
         }
 
-        if let error = appState.modelDownload.errorMessage, !error.isEmpty {
-          Text(error)
-            .font(.caption)
-            .foregroundStyle(.red)
+        if let errorTitle = appState.modelDownload.errorTitle,
+          let error = appState.modelDownload.errorMessage,
+          !error.isEmpty
+        {
+          VStack(alignment: .leading, spacing: 4) {
+            Text(errorTitle)
+              .font(.caption)
+              .fontWeight(.semibold)
+              .foregroundStyle(.red)
+            Text(error)
+              .font(.caption)
+              .foregroundStyle(.red)
+            if let recovery = appState.modelDownload.recoverySuggestion, !recovery.isEmpty {
+              Text("Recovery: \(recovery)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
         } else if !appState.modelDownload.progressText.isEmpty {
           Text(appState.modelDownload.progressText)
             .font(.caption)

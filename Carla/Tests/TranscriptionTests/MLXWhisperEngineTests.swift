@@ -54,13 +54,14 @@ final class MLXWhisperEngineTests: XCTestCase {
       .decodingFailed
     )
 
-    XCTAssertEqual(
-      MLXWhisperEngine.mapError(
-        MLXWhisperLibraryError.libraryFailure(code: 77, message: "core failed"),
-        model: .medium
-      ),
-      .runtimeFailure("mlx-library(77): core failed")
+    let runtimeError = MLXWhisperEngine.mapError(
+      MLXWhisperLibraryError.libraryFailure(code: 77, message: "core failed"),
+      model: .medium
     )
+    guard case .runtimeFailure(let runtimeMessage) = runtimeError else {
+      return XCTFail("Expected runtimeFailure, got \(runtimeError)")
+    }
+    XCTAssertTrue(runtimeMessage.contains("mlx-library(77)"))
   }
 
   func testMapErrorMapsCocoaFileMissingToModelUnavailable() {
