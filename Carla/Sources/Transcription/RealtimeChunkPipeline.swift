@@ -2,7 +2,7 @@ import Foundation
 
 /// Splits incoming audio packets into fixed-size realtime chunks.
 public struct RealtimeAudioChunker: Sendable {
-  public let chunkDuration: TimeInterval
+  public private(set) var chunkDuration: TimeInterval
 
   private var pendingSamples: [Float] = []
   private var currentChunkStart: TimeInterval?
@@ -10,11 +10,30 @@ public struct RealtimeAudioChunker: Sendable {
   private var source: TranscriptionTrackSource?
 
   public init(chunkDuration: TimeInterval) {
-    self.chunkDuration = chunkDuration
+    self.chunkDuration = Self.normalizedChunkDuration(chunkDuration)
+  }
+
+  /// Updates chunk duration for future chunk boundary calculations.
+  public mutating func updateChunkDuration(_ duration: TimeInterval) {
+    chunkDuration = Self.normalizedChunkDuration(duration)
   }
 
   /// Appends a packet and returns any completed chunks.
   public mutating func append(packet: AudioPacket) -> [AudioChunk] {
+    guard packet.sampleRate.isFinite, packet.sampleRate > 0, !packet.samples.isEmpty else {
+      return []
+    }
+
+    var output: [AudioChunk] = []
+
+    if let activeSampleRate = sampleRate, let activeSource = source,
+      activeSampleRate != packet.sampleRate || activeSource != packet.source
+    {
+      if let carryOver = flushPendingChunk(isFinal: false) {
+        output.append(carryOver)
+      }
+    }
+
     if currentChunkStart == nil {
       currentChunkStart = packet.startTime
     }
@@ -26,40 +45,54 @@ public struct RealtimeAudioChunker: Sendable {
     }
 
     pendingSamples.append(contentsOf: packet.samples)
-    return drainChunks(isFinal: false)
+    output.append(contentsOf: drainChunks())
+    return output
   }
 
   /// Flushes remaining data as a final chunk.
   public mutating func flushFinal() -> [AudioChunk] {
-    var chunks = drainChunks(isFinal: false)
+    var chunks = drainChunks()
+    if let final = flushPendingChunk(isFinal: true) {
+      chunks.append(final)
+    }
+    return chunks
+  }
+
+  private mutating func flushPendingChunk(isFinal: Bool) -> AudioChunk? {
     guard
       !pendingSamples.isEmpty,
       let chunkStart = currentChunkStart,
       let sampleRate,
       let source
     else {
-      return chunks
+      return nil
     }
 
     let duration = Double(pendingSamples.count) / sampleRate
-    let final = AudioChunk(
+    let chunk = AudioChunk(
       startTime: chunkStart,
       endTime: chunkStart + duration,
       sampleRate: sampleRate,
       samples: pendingSamples,
       source: source,
-      isFinal: true
+      isFinal: isFinal
     )
-    chunks.append(final)
+
     pendingSamples.removeAll(keepingCapacity: false)
     currentChunkStart = nil
     self.sampleRate = nil
     self.source = nil
-    return chunks
+
+    return chunk
   }
 
-  private mutating func drainChunks(isFinal: Bool) -> [AudioChunk] {
-    guard let sampleRate, let source else { return [] }
+  private static func normalizedChunkDuration(_ duration: TimeInterval) -> TimeInterval {
+    guard duration.isFinite, duration > 0 else { return 0.25 }
+    return max(0.25, duration)
+  }
+
+  private mutating func drainChunks() -> [AudioChunk] {
+    guard let sampleRate, let source, sampleRate.isFinite else { return [] }
     let targetSamples = Int((chunkDuration * sampleRate).rounded(.toNearestOrAwayFromZero))
     guard targetSamples > 0, let chunkStartBase = currentChunkStart else { return [] }
 
@@ -76,7 +109,7 @@ public struct RealtimeAudioChunker: Sendable {
         sampleRate: sampleRate,
         samples: chunkSamples,
         source: source,
-        isFinal: isFinal && pendingSamples.isEmpty
+        isFinal: false
       )
       chunks.append(chunk)
       chunkStart += duration

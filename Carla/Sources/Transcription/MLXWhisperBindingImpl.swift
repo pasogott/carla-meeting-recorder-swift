@@ -293,20 +293,34 @@ print(json.dumps({
 
 /// Production MLX binding used by app runtime wiring.
 public actor MLXWhisperBindingImpl: MLXWhisperBinding {
+  typealias ModelReadinessChecking = @Sendable (String) async -> Bool
+
   private let modelManager: MLXModelManager
   private let runtime: any MLXWhisperRuntime
+  private let isModelReady: ModelReadinessChecking
 
   public init(modelManager: MLXModelManager = MLXModelManager()) {
     self.modelManager = modelManager
     runtime = MLXPythonWhisperRuntime()
+    isModelReady = { modelID in
+      await modelManager.validateModelID(modelID)
+    }
   }
 
   init(
     modelManager: MLXModelManager,
-    runtime: any MLXWhisperRuntime
+    runtime: any MLXWhisperRuntime,
+    modelReadiness: ModelReadinessChecking? = nil
   ) {
     self.modelManager = modelManager
     self.runtime = runtime
+    if let modelReadiness {
+      self.isModelReady = modelReadiness
+    } else {
+      self.isModelReady = { modelID in
+        await modelManager.validateModelID(modelID)
+      }
+    }
   }
 
   public func transcribePCM(
@@ -370,7 +384,7 @@ public actor MLXWhisperBindingImpl: MLXWhisperBinding {
   }
 
   private func ensureModelReady(_ canonicalModelID: String) async throws {
-    let ready = await modelManager.validateModelID(canonicalModelID)
+    let ready = await isModelReady(canonicalModelID)
     guard ready else {
       throw MLXWhisperLibraryError.modelNotFound(canonicalModelID)
     }
