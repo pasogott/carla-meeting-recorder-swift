@@ -49,6 +49,9 @@ public struct ShadowTranscriptionRequestMetadata: Sendable {
   public let queueDepth: Int
   public let droppedItems: Int
   public let audioFileName: String?
+  public let qualityProfile: ASRQualityProfile?
+  public let decodePolicy: ASRDecodePolicy?
+  public let chunkDuration: TimeInterval?
 
   public init(
     jobID: UUID,
@@ -58,7 +61,10 @@ public struct ShadowTranscriptionRequestMetadata: Sendable {
     languageHint: ASRLanguageHint?,
     queueDepth: Int,
     droppedItems: Int,
-    audioFileName: String?
+    audioFileName: String?,
+    qualityProfile: ASRQualityProfile? = nil,
+    decodePolicy: ASRDecodePolicy? = nil,
+    chunkDuration: TimeInterval? = nil
   ) {
     self.jobID = jobID
     self.chunkID = chunkID
@@ -68,6 +74,9 @@ public struct ShadowTranscriptionRequestMetadata: Sendable {
     self.queueDepth = queueDepth
     self.droppedItems = droppedItems
     self.audioFileName = audioFileName
+    self.qualityProfile = qualityProfile
+    self.decodePolicy = decodePolicy
+    self.chunkDuration = chunkDuration
   }
 }
 
@@ -125,6 +134,9 @@ private struct ShadowArtifactRecord: Codable {
   let queueDepth: Int
   let droppedItems: Int
   let audioFileName: String?
+  let qualityProfile: String?
+  let decodePolicy: String?
+  let chunkDuration: Double?
 
   let attempt: Int
   let retried: Bool
@@ -153,6 +165,18 @@ private struct ShadowArtifactRecord: Codable {
 
   let primaryTranscriptPreview: [String]?
   let shadowTranscriptPreview: [String]?
+}
+
+private struct ShadowQualityTransitionRecord: Codable {
+  let timestamp: String
+  let type: String
+  let jobID: String
+  let fromProfile: String
+  let toProfile: String
+  let reason: String
+  let model: String
+  let chunkDuration: Double
+  let decodePolicy: String
 }
 
 public actor ShadowTranscriptionHarness {
@@ -200,6 +224,59 @@ public actor ShadowTranscriptionHarness {
     }
   }
 
+  public func captureQualityTransition(jobID: UUID, transition: ASRQualityTransition) {
+    do {
+      try fileManager.createDirectory(
+        at: configuration.artifactsDirectory,
+        withIntermediateDirectories: true
+      )
+      try pruneArtifactsIfNeeded()
+
+      let jobDirectory = configuration.artifactsDirectory
+        .appendingPathComponent(jobID.uuidString, isDirectory: true)
+      try fileManager.createDirectory(at: jobDirectory, withIntermediateDirectories: true)
+
+      let record = ShadowQualityTransitionRecord(
+        timestamp: isoFormatter.string(from: transition.timestamp),
+        type: "quality-governor-transition",
+        jobID: jobID.uuidString,
+        fromProfile: transition.from.rawValue,
+        toProfile: transition.to.rawValue,
+        reason: transition.reason,
+        model: transition.decision.model.rawValue,
+        chunkDuration: transition.decision.chunkDuration,
+        decodePolicy: transition.decision.decodePolicy.rawValue
+      )
+
+      let jsonData = try jsonEncoder.encode(record)
+      try append(data: jsonData + Data("\n".utf8), to: jobDirectory.appendingPathComponent("events.jsonl"))
+
+      let transitionsURL = jobDirectory.appendingPathComponent("quality-transitions.csv")
+      if !fileManager.fileExists(atPath: transitionsURL.path) {
+        let header = [
+          "timestamp", "from_profile", "to_profile", "reason", "model", "chunk_duration", "decode_policy",
+        ].joined(separator: ",") + "\n"
+        try append(data: Data(header.utf8), to: transitionsURL)
+      }
+
+      let transitionValues = [
+        record.timestamp,
+        record.fromProfile,
+        record.toProfile,
+        record.reason,
+        record.model,
+        String(format: "%.2f", record.chunkDuration),
+        record.decodePolicy,
+      ]
+      let transitionRow = transitionValues.map(csvEscape).joined(separator: ",") + "\n"
+      try append(data: Data(transitionRow.utf8), to: transitionsURL)
+
+      try pruneArtifactsIfNeeded()
+    } catch {
+      // Artifact recording must never interrupt transcription flow.
+    }
+  }
+
   private func buildRecord(from attempt: ShadowTranscriptionAttemptCapture) -> ShadowArtifactRecord {
     let drift = transcriptDrift(primary: attempt.primaryResult, shadow: attempt.shadowResult)
     return ShadowArtifactRecord(
@@ -213,6 +290,9 @@ public actor ShadowTranscriptionHarness {
       queueDepth: attempt.request.queueDepth,
       droppedItems: attempt.request.droppedItems,
       audioFileName: attempt.request.audioFileName,
+      qualityProfile: attempt.request.qualityProfile?.rawValue,
+      decodePolicy: attempt.request.decodePolicy?.rawValue,
+      chunkDuration: attempt.request.chunkDuration,
       attempt: attempt.attempt,
       retried: attempt.retried,
       retryReason: attempt.retryReason,
@@ -349,7 +429,7 @@ public actor ShadowTranscriptionHarness {
   private var csvHeader: String {
     [
       "timestamp", "operation", "job_id", "chunk_id", "source", "model", "language_hint",
-      "queue_depth", "dropped_items", "audio_file", "attempt", "retried", "retry_reason",
+      "queue_depth", "dropped_items", "audio_file", "quality_profile", "decode_policy", "chunk_duration", "attempt", "retried", "retry_reason",
       "primary_latency_ms", "shadow_latency_ms", "end_to_end_latency_ms",
       "primary_segments", "shadow_segments", "primary_tokens", "shadow_tokens", "token_alignment_drift",
       "language_mismatch", "primary_language", "shadow_language",
@@ -370,6 +450,9 @@ public actor ShadowTranscriptionHarness {
       String(record.queueDepth),
       String(record.droppedItems),
       record.audioFileName ?? "",
+      record.qualityProfile ?? "",
+      record.decodePolicy ?? "",
+      formatOptionalDouble(record.chunkDuration),
       String(record.attempt),
       String(record.retried),
       record.retryReason ?? "",

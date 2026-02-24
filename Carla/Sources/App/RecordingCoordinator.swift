@@ -214,7 +214,7 @@ public actor RecordingCoordinator {
 
     let baseConfig = RealtimeTranscriptionJobConfiguration(
       model: configuration.whisperModel,
-      chunkDuration: Self.effectiveChunkDuration(base: configuration.chunkDuration),
+      chunkDuration: configuration.chunkDuration,
       language: language
     )
 
@@ -522,29 +522,6 @@ public actor RecordingCoordinator {
       return $0.endTime < $1.endTime
     }
     return all
-  }
-
-  private static func effectiveChunkDuration(base: TimeInterval) -> TimeInterval {
-    var duration = max(1.0, base)
-
-    if ProcessInfo.processInfo.isLowPowerModeEnabled {
-      duration = max(duration, 3.0)
-    }
-
-    switch ProcessInfo.processInfo.thermalState {
-    case .nominal:
-      break
-    case .fair:
-      duration = max(duration, 2.5)
-    case .serious:
-      duration = max(duration, 3.5)
-    case .critical:
-      duration = max(duration, 5.0)
-    @unknown default:
-      duration = max(duration, 3.0)
-    }
-
-    return duration
   }
 
   private static func defaultMeetingTitle(for date: Date) -> String {

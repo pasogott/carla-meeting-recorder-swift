@@ -1,4 +1,5 @@
 import Foundation
+import Darwin.Mach
 
 /// Input configuration for realtime transcription jobs.
 public struct RealtimeTranscriptionJobConfiguration: Sendable {
@@ -6,17 +7,20 @@ public struct RealtimeTranscriptionJobConfiguration: Sendable {
   public let chunkDuration: TimeInterval
   public let language: TranscriptionLanguageConfiguration
   public let speakerMapper: SpeakerMapper
+  public let qualityGovernor: ASRQualityGovernorConfiguration
 
   public init(
     model: ASRModelProfile = .base,
     chunkDuration: TimeInterval = 2.0,
     language: TranscriptionLanguageConfiguration,
-    speakerMapper: SpeakerMapper = SpeakerMapper()
+    speakerMapper: SpeakerMapper = SpeakerMapper(),
+    qualityGovernor: ASRQualityGovernorConfiguration = ASRQualityGovernorConfiguration()
   ) {
     self.model = model
     self.chunkDuration = chunkDuration
     self.language = language
     self.speakerMapper = speakerMapper
+    self.qualityGovernor = qualityGovernor
   }
 }
 
@@ -50,12 +54,20 @@ public actor TranscriptionJobOrchestrator {
     let configuration: RealtimeTranscriptionJobConfiguration
     var mergedSegments: [TranscriptSegment]
     let startedUptime: TimeInterval
+    var qualityGovernor: RuntimeASRQualityGovernor
+    var currentDecision: ASRQualityDecision
+    var lastLatencySLABreached: Bool
   }
 
   private struct EngineCallOutcome: Sendable {
     let result: ASRTranscriptionResult?
     let error: Error?
     let latencyMs: Double
+  }
+
+  private struct ChunkTranscriptionResult: Sendable {
+    let segments: [TranscriptSegment]
+    let latencySLABreached: Bool
   }
 
   private let engine: ASRTranscribingEngine
@@ -85,11 +97,29 @@ public actor TranscriptionJobOrchestrator {
   /// Starts a realtime transcription job and returns its handle.
   public func startRealtimeJob(configuration: RealtimeTranscriptionJobConfiguration) -> UUID {
     let id = UUID()
+    let initialSignals = ASRQualitySignals(
+      latencySLABreached: false,
+      queueDepth: 0,
+      thermalState: ProcessInfo.processInfo.thermalState,
+      memoryPressure: currentMemoryPressure(threshold: configuration.qualityGovernor.memoryPressureRatioThreshold),
+      lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+    )
+    let governor = RuntimeASRQualityGovernor(
+      preferredModel: configuration.model,
+      preferredChunkDuration: configuration.chunkDuration,
+      configuration: configuration.qualityGovernor,
+      initialSignals: initialSignals
+    )
+    let initialDecision = governor.currentDecision
+
     realtimeJobs[id] = RealtimeState(
-      chunker: RealtimeAudioChunker(chunkDuration: configuration.chunkDuration),
+      chunker: RealtimeAudioChunker(chunkDuration: initialDecision.chunkDuration),
       configuration: configuration,
       mergedSegments: [],
-      startedUptime: ProcessInfo.processInfo.systemUptime
+      startedUptime: ProcessInfo.processInfo.systemUptime,
+      qualityGovernor: governor,
+      currentDecision: initialDecision,
+      lastLatencySLABreached: false
     )
     return id
   }
@@ -104,8 +134,29 @@ public actor TranscriptionJobOrchestrator {
     metricsHook.record(
       .queueBackpressure(operation: .streamChunk, queuedItems: chunks.count, droppedItems: 0))
 
-    let incoming = try await transcribeChunks(chunks, jobID: jobID, configuration: state.configuration)
-    state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
+    let preSignals = ASRQualitySignals(
+      latencySLABreached: state.lastLatencySLABreached,
+      queueDepth: chunks.count,
+      thermalState: ProcessInfo.processInfo.thermalState,
+      memoryPressure: currentMemoryPressure(threshold: state.configuration.qualityGovernor.memoryPressureRatioThreshold),
+      lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+    )
+
+    if let transition = state.qualityGovernor.evaluate(signals: preSignals) {
+      state.currentDecision = transition.decision
+      state.chunker.updateChunkDuration(transition.decision.chunkDuration)
+      await shadowHarness?.captureQualityTransition(jobID: jobID, transition: transition)
+    }
+
+    let transcription = try await transcribeChunks(
+      chunks,
+      jobID: jobID,
+      configuration: state.configuration,
+      quality: state.currentDecision
+    )
+
+    state.lastLatencySLABreached = transcription.latencySLABreached
+    state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: transcription.segments)
     realtimeJobs[jobID] = state
     return state.mergedSegments
   }
@@ -124,8 +175,13 @@ public actor TranscriptionJobOrchestrator {
     metricsHook.record(
       .queueBackpressure(operation: .finishRealtimeJob, queuedItems: chunks.count, droppedItems: 0))
 
-    let incoming = try await transcribeChunks(chunks, jobID: jobID, configuration: state.configuration)
-    state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
+    let transcription = try await transcribeChunks(
+      chunks,
+      jobID: jobID,
+      configuration: state.configuration,
+      quality: state.currentDecision
+    )
+    state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: transcription.segments)
     realtimeJobs.removeValue(forKey: jobID)
 
     let finishDurationMs = (ProcessInfo.processInfo.systemUptime - finishStart) * 1000
@@ -170,38 +226,44 @@ public actor TranscriptionJobOrchestrator {
   private func transcribeChunks(
     _ chunks: [AudioChunk],
     jobID: UUID,
-    configuration: RealtimeTranscriptionJobConfiguration
-  ) async throws -> [TranscriptSegment] {
-    guard !chunks.isEmpty else { return [] }
+    configuration: RealtimeTranscriptionJobConfiguration,
+    quality: ASRQualityDecision
+  ) async throws -> ChunkTranscriptionResult {
+    guard !chunks.isEmpty else { return ChunkTranscriptionResult(segments: [], latencySLABreached: false) }
     var mapped: [TranscriptSegment] = []
+    var latencySLABreached = false
 
     for (index, chunk) in chunks.enumerated() {
       let hint = configuration.language.primaryHint()
       let response = try await transcribeChunkWithFallback(
         chunk,
-        model: configuration.model,
+        model: quality.model,
         language: configuration.language,
         hint: hint,
         jobID: jobID,
         queueDepth: chunks.count - index - 1,
-        droppedItems: 0
+        droppedItems: 0,
+        quality: quality,
+        latencySLAMs: configuration.qualityGovernor.latencySLAMs
       )
 
-      let newSegments = response.segments.map {
+      latencySLABreached = latencySLABreached || response.latencySLABreached
+
+      let newSegments = response.result.segments.map {
         TranscriptSegment(
           startTime: chunk.startTime + $0.startTime,
           endTime: chunk.startTime + $0.endTime,
           text: $0.text,
           speaker: configuration.speakerMapper.speaker(for: chunk.source),
           confidence: $0.confidence,
-          language: response.detectedLanguageCode,
+          language: response.result.detectedLanguageCode,
           source: chunk.source
         )
       }
       mapped.append(contentsOf: newSegments)
     }
 
-    return mapped
+    return ChunkTranscriptionResult(segments: mapped, latencySLABreached: latencySLABreached)
   }
 
   private func transcribeChunkWithFallback(
@@ -211,8 +273,10 @@ public actor TranscriptionJobOrchestrator {
     hint: ASRLanguageHint?,
     jobID: UUID,
     queueDepth: Int,
-    droppedItems: Int
-  ) async throws -> ASRTranscriptionResult {
+    droppedItems: Int,
+    quality: ASRQualityDecision,
+    latencySLAMs: Double
+  ) async throws -> (result: ASRTranscriptionResult, latencySLABreached: Bool) {
     let requestMetadata = ShadowTranscriptionRequestMetadata(
       jobID: jobID,
       chunkID: chunk.id,
@@ -221,7 +285,10 @@ public actor TranscriptionJobOrchestrator {
       languageHint: hint,
       queueDepth: queueDepth,
       droppedItems: droppedItems,
-      audioFileName: nil
+      audioFileName: nil,
+      qualityProfile: quality.profile,
+      decodePolicy: quality.decodePolicy,
+      chunkDuration: quality.chunkDuration
     )
 
     let requestStart = ProcessInfo.processInfo.systemUptime
@@ -240,7 +307,7 @@ public actor TranscriptionJobOrchestrator {
         shadow: firstShadow,
         requestStartUptime: requestStart
       )
-      return result
+      return (result: result, latencySLABreached: firstPrimary.latencyMs > latencySLAMs)
     }
 
     guard let firstError = firstPrimary.error else {
@@ -283,7 +350,10 @@ public actor TranscriptionJobOrchestrator {
       languageHint: fallback,
       queueDepth: queueDepth,
       droppedItems: droppedItems,
-      audioFileName: nil
+      audioFileName: nil,
+      qualityProfile: quality.profile,
+      decodePolicy: quality.decodePolicy,
+      chunkDuration: quality.chunkDuration
     )
 
     let secondPrimary = await callPrimaryChunk(chunk, model: model, hint: fallback)
@@ -301,7 +371,7 @@ public actor TranscriptionJobOrchestrator {
         shadow: secondShadow,
         requestStartUptime: requestStart
       )
-      return result
+      return (result: result, latencySLABreached: secondPrimary.latencyMs > latencySLAMs)
     }
 
     metricsHook.record(.latency(operation: .streamChunk, durationMs: secondPrimary.latencyMs, success: false))
@@ -513,6 +583,26 @@ public actor TranscriptionJobOrchestrator {
         latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
       )
     }
+  }
+
+  private func currentMemoryPressure(threshold: Double) -> Bool {
+    let total = Double(ProcessInfo.processInfo.physicalMemory)
+    guard total > 0, let resident = residentMemoryBytes() else { return false }
+    let ratio = Double(resident) / total
+    return ratio >= threshold
+  }
+
+  private func residentMemoryBytes() -> UInt64? {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size)
+    let result: kern_return_t = withUnsafeMutablePointer(to: &info) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPointer in
+        task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), intPointer, &count)
+      }
+    }
+
+    guard result == KERN_SUCCESS else { return nil }
+    return UInt64(info.resident_size)
   }
 
   private func captureShadow(
