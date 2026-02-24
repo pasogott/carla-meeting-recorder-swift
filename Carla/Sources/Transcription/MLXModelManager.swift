@@ -547,6 +547,21 @@ public actor MLXModelManager {
     }
 
     let appending = http.statusCode == 206 && resumedBytes > 0
+    let expectedArtifactBytes: Int64? = {
+      if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+        let totalPart = contentRange.split(separator: "/").last,
+        let parsedTotal = Int64(totalPart)
+      {
+        return parsedTotal
+      }
+
+      if http.expectedContentLength > 0 {
+        return appending ? resumedBytes + http.expectedContentLength : http.expectedContentLength
+      }
+
+      return nil
+    }()
+
     if !appending, fileManager.fileExists(atPath: partialURL.path) {
       try fileManager.removeItem(at: partialURL)
     }
@@ -579,7 +594,7 @@ public actor MLXModelManager {
             model: model,
             modelID: modelID,
             bytesDownloaded: alreadyDownloadedBytes + written,
-            totalBytes: nil
+            totalBytes: expectedArtifactBytes.map { alreadyDownloadedBytes + $0 }
           )
         )
       }

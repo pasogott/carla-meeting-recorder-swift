@@ -254,6 +254,11 @@ private struct OnboardingSettingsTab: View {
             .foregroundStyle(modelStatusColor)
         }
 
+        if appState.modelDownload.isDownloading {
+          ProgressView(value: appState.modelDownload.progress)
+            .progressViewStyle(.linear)
+        }
+
         if let errorTitle = appState.modelDownload.errorTitle,
           let error = appState.modelDownload.errorMessage,
           !error.isEmpty
@@ -285,15 +290,32 @@ private struct OnboardingSettingsTab: View {
             }
           }
           .buttonStyle(.bordered)
-          .disabled(!appState.isMLXSupportedHardware)
+          .disabled(!appState.isMLXSupportedHardware || appState.modelDownload.isDownloading)
 
-          Button("Download Models") {
-            Task { @MainActor in
-              await appState.downloadRequiredModels()
+          if appState.modelDownload.isDownloading {
+            Button("Cancel Download") {
+              appState.cancelModelDownload()
             }
+            .buttonStyle(.bordered)
+          } else {
+            Button("Download Models") {
+              Task { @MainActor in
+                await appState.downloadRequiredModels()
+              }
+            }
+            .buttonStyle(.bordered)
+            .disabled(!appState.isMLXSupportedHardware)
           }
-          .buttonStyle(.bordered)
-          .disabled(appState.modelDownload.isDownloading || !appState.isMLXSupportedHardware)
+
+          if appState.modelDownload.status == .failed || appState.modelDownload.status == .cancelled {
+            Button("Retry") {
+              Task { @MainActor in
+                await appState.retryModelDownload()
+              }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!appState.isMLXSupportedHardware)
+          }
         }
       }
 
@@ -316,7 +338,7 @@ private struct OnboardingSettingsTab: View {
     .task {
       await appState.recheckPermissions()
       if !appState.modelDownload.isDownloading {
-        await appState.checkModelAvailability()
+        await appState.bootstrapRequiredModelsIfNeeded()
       }
     }
   }
@@ -337,6 +359,8 @@ private struct OnboardingSettingsTab: View {
       return "Ready"
     case .failed:
       return "Failed"
+    case .cancelled:
+      return "Cancelled"
     }
   }
 
@@ -354,6 +378,8 @@ private struct OnboardingSettingsTab: View {
       return .green
     case .failed:
       return .red
+    case .cancelled:
+      return .orange
     }
   }
 
