@@ -91,3 +91,16 @@ Documented: 2026-02-12
 **Decision:** Phase 2 ships with local LLM (llama.cpp, Phi-3 Mini or similar) as default. Optional: user can enter their own OpenAI API key for cloud-based summarization.
 
 **Rationale:** Preserves the "100% local" privacy promise while giving power users access to better quality via their own API key. Two code paths but clean abstraction behind a summarization protocol.
+
+## ADR-16: MLX Runtime Pin + Binding Contract (Production)
+
+**Decision:** Pin Carla production MLX runtime to Python package `mlx-whisper==0.4.3` (wheel `mlx_whisper-0.4.3-py3-none-any.whl`, SHA-256 `6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489`). Runtime API contract is fixed in `docs/mlx-runtime-api-contract.md` for `MLXWhisperBindingImpl` (`transcribePCM` via temporary WAV + `transcribeFile` + deterministic error mapping).
+
+**License constraints:** `mlx-whisper` is MIT-licensed. Carla distribution must retain upstream MIT notices for runtime integration and any vendored snippets.
+
+**Upgrade policy:**
+- Patch upgrades (`0.4.x -> 0.4.y`) are allowed only with: focused transcription tests green, fixture parity checks, and no regression in error-surface mapping.
+- Minor/major upgrades require explicit ADR update, artifact hash refresh, and P2 rollout gate rerun (EN/DE quality, latency, reliability).
+- Runtime pin updates must be atomic with docs updates (`DECISIONS.md` + `docs/mlx-runtime-api-contract.md`).
+
+**Rationale:** A hard runtime pin and explicit API contract remove ambiguity for dependent implementation tasks, keep inference behavior reproducible, and make production upgrades auditable.
