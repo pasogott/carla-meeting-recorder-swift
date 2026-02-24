@@ -97,6 +97,7 @@ enum ModelDownloadStatus: Equatable {
   case downloading
   case completed
   case failed
+  case cancelled
 }
 
 struct ModelDownloadState: Equatable {
@@ -378,6 +379,11 @@ final class AppState: ObservableObject {
       await self.applyRecordingConfiguration(self.settings)
     }
 
+    Task { [weak self] in
+      guard let self else { return }
+      await self.bootstrapRequiredModelsIfNeeded()
+    }
+
     // Forward permission updates so AppState-driven views refresh.
     self.permissionManager.objectWillChange
       .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -501,6 +507,17 @@ final class AppState: ObservableObject {
   }
 
   // MARK: - Model Download Actions
+
+  /// First-run bootstrap entrypoint. Checks readiness and auto-downloads required models when missing.
+  func bootstrapRequiredModelsIfNeeded() async {
+    guard showOnboarding else { return }
+    guard !modelDownload.isDownloading else { return }
+
+    await checkModelAvailability()
+    if modelDownload.status != .completed {
+      await downloadRequiredModels()
+    }
+  }
 
   /// Checks if required MLX models are available locally.
   func checkModelAvailability() async {
@@ -645,6 +662,29 @@ final class AppState: ObservableObject {
       downloadTask = nil
       downloadOperationID = nil
     }
+  }
+
+  func cancelModelDownload() {
+    downloadTask?.cancel()
+    downloadTask = nil
+    downloadOperationID = nil
+
+    Task { [modelManager] in
+      await modelManager.cancelAllDownloads()
+    }
+
+    modelDownload.status = .cancelled
+    modelDownload.currentModel = nil
+    modelDownload.progress = 0
+    modelDownload.progressText = "Download cancelled"
+    modelDownload.errorTitle = nil
+    modelDownload.errorMessage = nil
+    modelDownload.recoverySuggestion = nil
+    onboarding.modelsReady = false
+  }
+
+  func retryModelDownload() async {
+    await downloadRequiredModels()
   }
 
   // MARK: - Meeting Actions
