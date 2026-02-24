@@ -9,6 +9,43 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 @build:
     xcodebuild -project Carla/Carla.xcodeproj -scheme Carla -configuration Debug -destination 'platform=macOS' build
 
+# Quit and reopen the latest local Debug build (use after granting permissions).
+@reopen:
+    osascript -e 'tell application "Carla" to quit' >/dev/null 2>&1 || true
+    pkill -x Carla >/dev/null 2>&1 || true
+    test -d "$(pwd)/Carla/.build/xcode/Build/Products/Debug/Carla.app"
+    open "$(pwd)/Carla/.build/xcode/Build/Products/Debug/Carla.app"
+
+# Remove old Carla installs, reset TCC permissions, rebuild Carla, then open the freshly built app.
+@run-fresh:
+    echo "[1/5] Quitting running Carla instance (if any)…"
+    osascript -e 'tell application "Carla" to quit' >/dev/null 2>&1 || true
+    pkill -x Carla >/dev/null 2>&1 || true
+
+    echo "[2/5] Removing old Carla installations…"
+    for app in "/Applications/Carla.app" "$HOME/Applications/Carla.app"; do if [[ -d "$app" ]]; then echo "  - deleting $app"; rm -rf "$app"; fi; done
+
+    echo "[3/5] Resetting macOS privacy permissions for at.cyberheld.carla…"
+    tccutil reset All "at.cyberheld.carla" || true
+    tccutil reset ScreenCapture "at.cyberheld.carla" || true
+    tccutil reset Microphone "at.cyberheld.carla" || true
+    tccutil reset Camera "at.cyberheld.carla" || true
+    tccutil reset Accessibility "at.cyberheld.carla" || true
+
+    echo "[4/5] Building Carla (Debug)…"
+    xcodebuild \
+      -project Carla/Carla.xcodeproj \
+      -scheme Carla \
+      -configuration Debug \
+      -destination 'platform=macOS' \
+      -derivedDataPath "$(pwd)/Carla/.build/xcode" \
+      build
+
+    test -d "$(pwd)/Carla/.build/xcode/Build/Products/Debug/Carla.app"
+
+    echo "[5/5] Opening $(pwd)/Carla/.build/xcode/Build/Products/Debug/Carla.app…"
+    open "$(pwd)/Carla/.build/xcode/Build/Products/Debug/Carla.app"
+
 @check-clean:
     test -z "$(git status --porcelain)" || (echo "Working tree is not clean. Commit or stash changes first." >&2; exit 1)
 
