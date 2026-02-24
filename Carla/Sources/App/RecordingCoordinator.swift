@@ -4,6 +4,7 @@ import CarlaModels
 import CarlaStorage
 import CarlaTranscription
 import Foundation
+import OSLog
 
 /// Error type for recording coordinator operations.
 public enum RecordingError: LocalizedError {
@@ -77,6 +78,15 @@ private struct ActiveRecording {
 /// - Uses **two realtime transcription jobs** (mic + system) so chunking and speaker/source mapping remain correct.
 /// - Exposes state via `AsyncStream` instead of Combine to avoid Sendable/concurrency footguns.
 public actor RecordingCoordinator {
+  struct StopFinalizationContext: Sendable {
+    let meetingID: UUID
+    let startedAt: Date
+    let microphoneJobID: UUID
+    let systemJobID: UUID
+    let fallbackMicrophoneSegments: [CarlaTranscription.TranscriptSegment]
+    let fallbackSystemSegments: [CarlaTranscription.TranscriptSegment]
+  }
+
   public struct Streams: Sendable {
     public let liveSegments: AsyncStream<[CarlaTranscription.TranscriptSegment]>
     public let audioLevels: AsyncStream<AudioLevelUpdate>
@@ -97,6 +107,7 @@ public actor RecordingCoordinator {
 
   private var frameContinuation: AsyncStream<(CapturedAudioFrame, TimeInterval)>.Continuation?
   private var frameProcessingTask: Task<Void, Never>?
+  private let logger = Logger(subsystem: "at.cyberheld.carla", category: "RecordingCoordinator")
 
   public init(
     transcriptionOrchestrator: TranscriptionJobOrchestrator,
@@ -302,75 +313,16 @@ public actor RecordingCoordinator {
     let finalRecording = activeRecording ?? recording
     activeRecording = nil
 
-    // Finalize transcription (both sources).
-    let microphoneSegments: [CarlaTranscription.TranscriptSegment]
-    let systemSegments: [CarlaTranscription.TranscriptSegment]
-
-    do {
-      microphoneSegments = try await transcriptionOrchestrator.finishRealtimeJob(
-        finalRecording.microphoneJobID)
-    } catch {
-      let best = await transcriptionOrchestrator.cancelRealtimeJob(finalRecording.microphoneJobID)
-      microphoneSegments = best.isEmpty ? finalRecording.microphoneSegments : best
-    }
-
-    do {
-      systemSegments = try await transcriptionOrchestrator.finishRealtimeJob(
-        finalRecording.systemJobID)
-    } catch {
-      let best = await transcriptionOrchestrator.cancelRealtimeJob(finalRecording.systemJobID)
-      systemSegments = best.isEmpty ? finalRecording.systemSegments : best
-    }
-
-    let mergedSegments = Self.mergeSegments(
-      microphoneSegments: microphoneSegments, systemSegments: systemSegments)
-    liveSegmentsContinuation.yield(mergedSegments)
-
-    // Update meeting metadata + final stereo file path.
-    let endedAt = Date()
-    let duration = endedAt.timeIntervalSince(finalRecording.startedAt)
-
-    let stereoWAV = artifacts.stereoMixWAV
-    let stereoM4AURL = stereoWAV.deletingPathExtension().appendingPathExtension("m4a")
-
-    let audioFilePath: String
-    if configuration.compressToM4A, FileManager.default.fileExists(atPath: stereoM4AURL.path) {
-      audioFilePath = stereoM4AURL.path
-    } else {
-      audioFilePath = stereoWAV.path
-    }
-
-    var meeting = Meeting(
-      id: finalRecording.meetingID,
-      title: Self.defaultMeetingTitle(for: finalRecording.startedAt),
+    let context = StopFinalizationContext(
+      meetingID: finalRecording.meetingID,
       startedAt: finalRecording.startedAt,
-      endedAt: endedAt,
-      duration: duration,
-      audioFilePath: audioFilePath
+      microphoneJobID: finalRecording.microphoneJobID,
+      systemJobID: finalRecording.systemJobID,
+      fallbackMicrophoneSegments: finalRecording.microphoneSegments,
+      fallbackSystemSegments: finalRecording.systemSegments
     )
-    meeting.updatedAt = Date()
 
-    do {
-      try repository.saveMeeting(meeting)
-    } catch {
-      throw RecordingError.storageFailed(error)
-    }
-
-    // Persist speakers + segments (best effort; storage errors here should not crash stop flow).
-    persistSpeakersAndSegments(meetingID: finalRecording.meetingID, segments: mergedSegments)
-
-    // Cleanup WAVs only if compression succeeded and we actually reference the M4A.
-    if configuration.compressToM4A,
-      configuration.deleteWAVAfterCompression,
-      audioFilePath == stereoM4AURL.path
-    {
-      let fileManager = FileManager.default
-      try? fileManager.removeItem(at: artifacts.microphoneWAV)
-      try? fileManager.removeItem(at: artifacts.systemWAV)
-      try? fileManager.removeItem(at: artifacts.stereoMixWAV)
-    }
-
-    return finalRecording.meetingID
+    return try await finalizeStopFlow(context: context, artifacts: artifacts)
   }
 
   // MARK: - Private
@@ -422,6 +374,111 @@ public actor RecordingCoordinator {
       // Best-effort: do not interrupt recording.
       // Consider surfacing to UI via a separate error stream if we want user-visible errors.
     }
+  }
+
+  func finalizeStopFlow(
+    context: StopFinalizationContext,
+    artifacts: RecordingArtifacts
+  ) async throws -> UUID {
+    let microphoneSegments = await finalizeRealtimeJob(
+      jobID: context.microphoneJobID,
+      fallbackSegments: context.fallbackMicrophoneSegments
+    )
+    let systemSegments = await finalizeRealtimeJob(
+      jobID: context.systemJobID,
+      fallbackSegments: context.fallbackSystemSegments
+    )
+
+    let realtimeMergedSegments = Self.mergeSegments(
+      microphoneSegments: microphoneSegments,
+      systemSegments: systemSegments
+    )
+    liveSegmentsContinuation.yield(realtimeMergedSegments)
+
+    let (audioFilePath, stereoM4AURL) = Self.resolveFinalAudioFilePath(
+      artifacts: artifacts,
+      shouldPreferM4A: configuration.compressToM4A
+    )
+
+    let polishedOrFallbackSegments: [CarlaTranscription.TranscriptSegment]
+    do {
+      let language = TranscriptionLanguageConfiguration(
+        primaryLanguageCode: configuration.primaryLanguageCode,
+        autoDetectFallback: configuration.autoDetectFallback
+      )
+      let request = PostRecordingPolishRequest(
+        audioFileURL: URL(fileURLWithPath: audioFilePath),
+        source: .microphone,
+        model: configuration.whisperModel,
+        language: language
+      )
+      polishedOrFallbackSegments = try await transcriptionOrchestrator.runPolishJob(request)
+      liveSegmentsContinuation.yield(polishedOrFallbackSegments)
+    } catch {
+      logger.warning(
+        "Post-recording polish failed for meeting \(context.meetingID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public). Falling back to realtime transcript."
+      )
+      polishedOrFallbackSegments = realtimeMergedSegments
+    }
+
+    let endedAt = Date()
+    let duration = endedAt.timeIntervalSince(context.startedAt)
+
+    var meeting = Meeting(
+      id: context.meetingID,
+      title: Self.defaultMeetingTitle(for: context.startedAt),
+      startedAt: context.startedAt,
+      endedAt: endedAt,
+      duration: duration,
+      audioFilePath: audioFilePath
+    )
+    meeting.updatedAt = Date()
+
+    do {
+      try repository.saveMeeting(meeting)
+    } catch {
+      throw RecordingError.storageFailed(error)
+    }
+
+    persistSpeakersAndSegments(meetingID: context.meetingID, segments: polishedOrFallbackSegments)
+
+    if configuration.compressToM4A,
+      configuration.deleteWAVAfterCompression,
+      audioFilePath == stereoM4AURL.path
+    {
+      let fileManager = FileManager.default
+      try? fileManager.removeItem(at: artifacts.microphoneWAV)
+      try? fileManager.removeItem(at: artifacts.systemWAV)
+      try? fileManager.removeItem(at: artifacts.stereoMixWAV)
+    }
+
+    return context.meetingID
+  }
+
+  private func finalizeRealtimeJob(
+    jobID: UUID,
+    fallbackSegments: [CarlaTranscription.TranscriptSegment]
+  ) async -> [CarlaTranscription.TranscriptSegment] {
+    do {
+      return try await transcriptionOrchestrator.finishRealtimeJob(jobID)
+    } catch {
+      let best = await transcriptionOrchestrator.cancelRealtimeJob(jobID)
+      return best.isEmpty ? fallbackSegments : best
+    }
+  }
+
+  private static func resolveFinalAudioFilePath(
+    artifacts: RecordingArtifacts,
+    shouldPreferM4A: Bool
+  ) -> (path: String, stereoM4AURL: URL) {
+    let stereoWAV = artifacts.stereoMixWAV
+    let stereoM4AURL = stereoWAV.deletingPathExtension().appendingPathExtension("m4a")
+
+    if shouldPreferM4A, FileManager.default.fileExists(atPath: stereoM4AURL.path) {
+      return (stereoM4AURL.path, stereoM4AURL)
+    }
+
+    return (stereoWAV.path, stereoM4AURL)
   }
 
   private func persistSpeakersAndSegments(

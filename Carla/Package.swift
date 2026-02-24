@@ -84,7 +84,9 @@ let package = Package(
         .testTarget(
             name: "IntegrationTests",
             dependencies: [
+                "CarlaCoreTypes",
                 "CarlaModels",
+                "CarlaRecording",
                 "CarlaTranscription",
                 "CarlaStorage"
             ],
