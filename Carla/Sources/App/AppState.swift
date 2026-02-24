@@ -68,7 +68,7 @@ struct AppSettings: Equatable {
   static let `default` = AppSettings(
     selectedInputDevice: "System Default Microphone",
     selectedOutputDevice: "System Default Output",
-    selectedModel: "mlx-community/whisper-base",
+    selectedModel: "mlx-community/whisper-medium",
     storagePath: "~/Library/Application Support/Carla",
     launchAtLogin: false,
     showNotchOverlay: false,
@@ -252,28 +252,31 @@ final class AppState: ObservableObject {
     }
   }
 
-  static let availableMLXModels: [MLXModelOption] = [
-    MLXModelOption(
-      id: "mlx-community/whisper-base",
-      label: "Whisper Base (MLX)",
-      profile: .base
-    ),
-    MLXModelOption(
-      id: "mlx-community/whisper-small",
-      label: "Whisper Small (MLX)",
-      profile: .small
-    ),
-    MLXModelOption(
-      id: "mlx-community/whisper-medium",
-      label: "Whisper Medium (MLX)",
-      profile: .medium
-    ),
-    MLXModelOption(
-      id: "mlx-community/whisper-large-v3",
-      label: "Whisper Large v3 (MLX)",
-      profile: .large
-    ),
-  ]
+  static let availableMLXModels: [MLXModelOption] = {
+    let orderedPolicy: [MLXModelPolicyTier] = [
+      .requiredDefault,
+      .optionalQuality,
+      .pressureFallback,
+    ]
+
+    return MLXModelManager.availableModels
+      .filter { $0.policyTier != .legacyCompatibility }
+      .sorted { lhs, rhs in
+        let lhsIndex = orderedPolicy.firstIndex(of: lhs.policyTier) ?? orderedPolicy.count
+        let rhsIndex = orderedPolicy.firstIndex(of: rhs.policyTier) ?? orderedPolicy.count
+        if lhsIndex != rhsIndex {
+          return lhsIndex < rhsIndex
+        }
+        return lhs.displayName < rhs.displayName
+      }
+      .map {
+        MLXModelOption(
+          id: $0.modelID,
+          label: "Whisper \($0.displayName) (MLX)",
+          profile: $0.profile
+        )
+      }
+  }()
 
   #if canImport(Sparkle)
     private var updaterController: SPUStandardUpdaterController?
@@ -522,11 +525,11 @@ final class AppState: ObservableObject {
       modelDownload.errorMessage = nil
       onboarding.modelsReady = true
     } else {
-      modelDownload.status = .idle
+      modelDownload.status = .failed
       modelDownload.currentModel = nil
       modelDownload.progress = 0
-      modelDownload.progressText = ""
-      modelDownload.errorMessage = nil
+      modelDownload.progressText = "Models not ready"
+      modelDownload.errorMessage = "Required MLX model artifacts are missing or invalid."
       onboarding.modelsReady = false
     }
   }
@@ -992,15 +995,15 @@ final class AppState: ObservableObject {
     // Legacy fallback values kept for pre-MLX settings migration.
     switch normalized {
     case "base":
-      return .base
+      return .medium
     case "small":
       return .small
     case "medium":
       return .medium
-    case "large":
+    case "large", "large-v3", "large_v3":
       return .large
     default:
-      return .base
+      return .medium
     }
   }
 
@@ -1037,15 +1040,15 @@ final class AppState: ObservableObject {
 
     switch normalized {
     case "base":
-      return "mlx-community/whisper-base"
+      return "mlx-community/whisper-medium"
     case "small":
       return "mlx-community/whisper-small"
     case "medium":
       return "mlx-community/whisper-medium"
-    case "large":
+    case "large", "large-v3", "large_v3":
       return "mlx-community/whisper-large-v3"
     default:
-      return "mlx-community/whisper-base"
+      return "mlx-community/whisper-medium"
     }
   }
 

@@ -254,6 +254,16 @@ private struct OnboardingSettingsTab: View {
             .foregroundStyle(modelStatusColor)
         }
 
+        if let error = appState.modelDownload.errorMessage, !error.isEmpty {
+          Text(error)
+            .font(.caption)
+            .foregroundStyle(.red)
+        } else if !appState.modelDownload.progressText.isEmpty {
+          Text(appState.modelDownload.progressText)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
         HStack {
           Button("Check Models") {
             Task { @MainActor in
@@ -301,32 +311,36 @@ private struct OnboardingSettingsTab: View {
     if !appState.isMLXSupportedHardware {
       return "Unsupported (Intel)"
     }
-    if appState.modelDownload.isDownloading {
+
+    switch appState.modelDownload.status {
+    case .idle:
+      return "Not ready"
+    case .checking:
+      return "Checking"
+    case .downloading:
       return "Downloading"
-    }
-    if appState.modelDownload.isComplete {
+    case .completed:
       return "Ready"
-    }
-    if appState.modelDownload.errorMessage != nil {
+    case .failed:
       return "Failed"
     }
-    return "Not ready"
   }
 
   private var modelStatusColor: Color {
     if !appState.isMLXSupportedHardware {
       return .red
     }
-    if appState.modelDownload.isDownloading {
+
+    switch appState.modelDownload.status {
+    case .idle:
+      return .secondary
+    case .checking, .downloading:
       return .blue
-    }
-    if appState.modelDownload.isComplete {
+    case .completed:
       return .green
-    }
-    if appState.modelDownload.errorMessage != nil {
+    case .failed:
       return .red
     }
-    return .secondary
   }
 
   private func label(for status: PermissionStatus) -> String {
