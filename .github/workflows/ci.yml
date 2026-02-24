@@ -69,3 +69,34 @@ jobs:
             -configuration Debug \
             -destination 'platform=macOS' \
             build
+
+      - name: Xcode build (Release, unsigned)
+        run: |
+          set -euo pipefail
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
+          xcodebuild \
+            -project Carla/Carla.xcodeproj \
+            -scheme Carla \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          APP_PATH="$DERIVED_DATA/Build/Products/Release/Carla.app"
+          [[ -d "$APP_PATH" ]] || { echo "missing app bundle: $APP_PATH" >&2; exit 1; }
+
+          echo "DERIVED_DATA=$DERIVED_DATA" >> "$GITHUB_ENV"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Package bundled MLX runtime assets
+        run: |
+          set -euo pipefail
+          scripts/package-mlx-runtime-assets.sh "$APP_PATH"
+
+      - name: Verify bundled MLX runtime assets
+        run: |
+          set -euo pipefail
+          scripts/verify-mlx-runtime-assets.sh "$APP_PATH"

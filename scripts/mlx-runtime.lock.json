@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "notes": "Pinned runtime inputs for bundled MLX transcription assets.",
+  "python": {
+    "source_binary": "/usr/bin/python3"
+  },
+  "packages": [
+    {
+      "name": "mlx-whisper",
+      "version": "0.4.3"
+    }
+  ]
+}

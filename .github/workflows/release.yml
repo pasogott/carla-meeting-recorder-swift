@@ -238,6 +238,16 @@ jobs:
           echo "DERIVED_DATA=$DERIVED_DATA" >> "$GITHUB_ENV"
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
+      - name: Package bundled MLX runtime assets
+        run: |
+          set -euo pipefail
+          scripts/package-mlx-runtime-assets.sh "$APP_PATH"
+
+      - name: Verify bundled MLX runtime assets
+        run: |
+          set -euo pipefail
+          scripts/verify-mlx-runtime-assets.sh "$APP_PATH"
+
       - name: Inject Sparkle public key
         env:
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
