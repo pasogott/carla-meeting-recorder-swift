@@ -48,7 +48,7 @@ Carla is a macOS menu bar app that automatically records, transcribes, and summa
 - [ ] Permission handling: Microphone + Screen Recording (for system audio)
 
 #### P1.3 Local Transcription
-- [ ] Integrate whisper.cpp via Swift bindings → **ADR-05**
+- [x] Integrate MLX Whisper runtime via Swift/Python bridge → **ADR-05**
 - [ ] Bundle "base" model (~150MB) for real-time streaming transcription
 - [ ] Bundle "small" model (~500MB) for post-recording polish pass
 - [ ] Option to download "medium" or "large" model for even better quality
@@ -151,7 +151,7 @@ Carla is a macOS menu bar app that automatically records, transcribes, and summa
 │              Audio Mixer / Recorder                   │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 │  │ Ring      │  │ File     │  │ Streaming chunks  │  │
-│  │ Buffer    │  │ Writer   │  │ → Whisper.cpp     │  │
+│  │ Buffer    │  │ Writer   │  │ → MLX Whisper     │  │
 │  └──────────┘  └──────────┘  └───────────────────┘  │
 └─────────────────────────────────────────────────────┘
          │                              │
@@ -228,7 +228,7 @@ ActionItem
 3. Recording consent disclaimer — user confirms responsibility for their jurisdiction → **ADR-11**
 4. "Grant Permissions" button → guides through Mic + Screen Recording
 5. Set primary language for transcription → **ADR-06**
-6. Download Whisper models: "base" + "small" (background, progress shown) → **ADR-05**
+6. Download MLX Whisper models: "base" + "small" (background, progress shown) → **ADR-05**
 7. Ready state: icon turns white/idle
 
 ### Recording a Meeting
@@ -294,7 +294,7 @@ ActionItem
 | 2 | Implement microphone audio capture | `audio` | P0 |
 | 3 | Implement system audio capture via ScreenCaptureKit | `audio` | P0 |
 | 4 | Audio mixer: combine mic + system into recording | `audio` | P0 |
-| 5 | Integrate whisper.cpp for local transcription | `transcription` | P0 |
+| 5 | Integrate MLX Whisper for local transcription | `transcription` | P0 |
 | 6 | Real-time streaming transcription during recording | `transcription` | P0 |
 | 7 | SQLite storage for meetings + transcripts | `infra` | P0 |
 | 8 | Meeting list view (SwiftUI window) | `ui` | P1 |
