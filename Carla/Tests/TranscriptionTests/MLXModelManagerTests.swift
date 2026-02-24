@@ -95,7 +95,7 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(available)
   }
 
-  func testValidateModelReturnsFalseWhenWrongSize() async throws {
+  func testValidateModelReturnsFalseWhenArtifactChecksumsAreMissing() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.base])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
@@ -114,7 +114,7 @@ final class MLXModelManagerTests: XCTestCase {
     }
 
     XCTAssertEqual(modelID, "mlx-community/whisper-medium")
-    XCTAssertEqual(relativePath, "model.bin")
+    XCTAssertEqual(relativePath, "config.json")
   }
 
   // MARK: - Legacy Cleanup Gating

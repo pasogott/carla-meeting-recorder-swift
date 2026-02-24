@@ -440,6 +440,7 @@ public actor MLXModelManager {
     case corruptedArtifacts
     case invalidResponse
     case invalidManifestPath
+    case invalidManifestIntegrity
     case unknown
   }
 
@@ -463,6 +464,8 @@ public actor MLXModelManager {
         return "Download failed: invalid server response."
       case .invalidManifestPath:
         return "Download failed due to invalid artifact path in manifest."
+      case .invalidManifestIntegrity:
+        return "Download blocked: artifact checksum metadata is missing or invalid."
       case .unknown:
         return "Download failed: \(detail)"
       }
@@ -528,6 +531,13 @@ public actor MLXModelManager {
   ) async throws -> ArtifactDownloadResult {
     let fileManager = FileManager.default
     try ensureDirectory(at: artifactURL.deletingLastPathComponent())
+
+    guard let expectedChecksum = normalizedChecksum(artifact.checksumSHA256) else {
+      throw CategorizedDownloadError(
+        category: .invalidManifestIntegrity,
+        detail: "Missing/invalid checksum for \(artifact.relativePath)"
+      )
+    }
 
     let partialURL = artifactURL.appendingPathExtension("partial")
     let resumedBytes = fileManager.fileExists(atPath: partialURL.path) ? fileSize(at: partialURL) : 0
@@ -605,10 +615,8 @@ public actor MLXModelManager {
       written += Int64(buffer.count)
     }
 
-    if let expectedChecksum = normalizedChecksum(artifact.checksumSHA256) {
-      guard let actualChecksum = computeSHA256Hex(for: partialURL), actualChecksum == expectedChecksum else {
-        throw CategorizedDownloadError(category: .corruptedArtifacts, detail: artifact.relativePath)
-      }
+    guard let actualChecksum = computeSHA256Hex(for: partialURL), actualChecksum == expectedChecksum else {
+      throw CategorizedDownloadError(category: .corruptedArtifacts, detail: artifact.relativePath)
     }
 
     if fileManager.fileExists(atPath: artifactURL.path) {
@@ -740,40 +748,46 @@ public actor MLXModelManager {
       return .unsupportedModelID(canonical)
     }
 
-    let modelURL = await modelLoader.modelFilePath(
+    let modelRootURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
     )
-    return validatePrimaryArtifact(descriptor: descriptor, artifactURL: modelURL)
+    return validateRequiredArtifacts(descriptor: descriptor, rootURL: modelRootURL)
   }
 
-  private func validatePrimaryArtifact(
+  private func validateRequiredArtifacts(
     descriptor: MLXModelDescriptor,
-    artifactURL: URL
+    rootURL: URL
   ) -> MLXModelValidationError? {
-    guard let primaryArtifact = descriptor.requiredArtifacts.first(where: { $0.relativePath == "model.bin" }) else {
-      return .artifactContractMissing(modelID: descriptor.modelID, relativePath: "model.bin")
+    guard !descriptor.requiredArtifacts.isEmpty else {
+      return .artifactContractMissing(modelID: descriptor.modelID, relativePath: "<empty-contract>")
     }
 
-    guard let checksum = normalizedChecksum(primaryArtifact.checksumSHA256) else {
-      return .checksumMissing(modelID: descriptor.modelID, relativePath: primaryArtifact.relativePath)
-    }
+    for artifact in descriptor.requiredArtifacts {
+      guard let checksum = normalizedChecksum(artifact.checksumSHA256) else {
+        return .checksumMissing(modelID: descriptor.modelID, relativePath: artifact.relativePath)
+      }
 
-    guard FileManager.default.fileExists(atPath: artifactURL.path) else {
-      return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
-    }
+      guard let artifactURL = try? safeArtifactURL(root: rootURL, relativePath: artifact.relativePath) else {
+        return .artifactContractMissing(modelID: descriptor.modelID, relativePath: artifact.relativePath)
+      }
 
-    guard let actual = computeSHA256Hex(for: artifactURL) else {
-      return .checksumComputationFailed(modelID: descriptor.modelID, path: artifactURL)
-    }
+      guard FileManager.default.fileExists(atPath: artifactURL.path) else {
+        return .fileMissing(modelID: descriptor.modelID, path: artifactURL)
+      }
 
-    guard actual == checksum else {
-      return .checksumMismatch(
-        modelID: descriptor.modelID,
-        relativePath: primaryArtifact.relativePath,
-        expected: checksum,
-        actual: actual
-      )
+      guard let actual = computeSHA256Hex(for: artifactURL) else {
+        return .checksumComputationFailed(modelID: descriptor.modelID, path: artifactURL)
+      }
+
+      guard actual == checksum else {
+        return .checksumMismatch(
+          modelID: descriptor.modelID,
+          relativePath: artifact.relativePath,
+          expected: checksum,
+          actual: actual
+        )
+      }
     }
 
     return nil

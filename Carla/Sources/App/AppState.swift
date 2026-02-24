@@ -97,6 +97,7 @@ enum ModelDownloadStatus: Equatable {
   case downloading
   case completed
   case failed
+  case validationFailed
   case cancelled
 }
 
@@ -552,12 +553,13 @@ final class AppState: ObservableObject {
       modelDownload.recoverySuggestion = nil
       onboarding.modelsReady = true
     } else {
-      let message = "Required MLX model artifacts are missing or invalid."
+      let validationError = await firstRequiredModelValidationError()
+      let message = validationError?.message ?? "Required MLX model artifacts are missing or invalid."
       let guidance = MLXErrorUX.guidance(for: message)
-      modelDownload.status = .failed
+      modelDownload.status = .validationFailed
       modelDownload.currentModel = nil
       modelDownload.progress = 0
-      modelDownload.progressText = "Models not ready"
+      modelDownload.progressText = "Validation failed — retry required"
       modelDownload.errorTitle = guidance.title
       modelDownload.errorMessage = message
       modelDownload.recoverySuggestion = guidance.recovery
@@ -631,6 +633,11 @@ final class AppState: ObservableObject {
         guard isCurrentOperation else { return }
 
         let allReady = await self.areRequiredModelsReadyForOnboarding()
+        let validationMessage = allReady
+          ? nil
+          : await self.firstRequiredModelValidationError()?.message
+            ?? "Model validation failed after download. Retry required."
+
         await MainActor.run {
           guard self.downloadOperationID == operationID else { return }
           if allReady {
@@ -642,13 +649,13 @@ final class AppState: ObservableObject {
             modelDownload.errorMessage = nil
             modelDownload.recoverySuggestion = nil
             onboarding.modelsReady = true
-          } else if modelDownload.errorMessage == nil {
-            let fallbackMessage = "Download incomplete"
-            let guidance = MLXErrorUX.guidance(for: fallbackMessage)
-            modelDownload.status = .failed
+          } else if modelDownload.errorMessage == nil, let validationMessage {
+            let guidance = MLXErrorUX.guidance(for: validationMessage)
+            modelDownload.status = .validationFailed
             modelDownload.errorTitle = guidance.title
-            modelDownload.errorMessage = fallbackMessage
+            modelDownload.errorMessage = validationMessage
             modelDownload.recoverySuggestion = guidance.recovery
+            modelDownload.progressText = "Validation failed — retry required"
             onboarding.modelsReady = false
           }
         }
@@ -904,12 +911,16 @@ final class AppState: ObservableObject {
   }
 
   private func areRequiredModelsReadyForOnboarding() async -> Bool {
+    await firstRequiredModelValidationError() == nil
+  }
+
+  private func firstRequiredModelValidationError() async -> MLXModelValidationError? {
     for modelID in MLXModelCatalog.requiredModelIDs {
-      guard await modelManager.validateModelID(modelID) else {
-        return false
+      if let error = await modelManager.validationError(forModelID: modelID) {
+        return error
       }
     }
-    return true
+    return nil
   }
 
   private static let isMLXSupportedHardware: Bool = {
