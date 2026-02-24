@@ -1,0 +1,84 @@
+{
+  "manifest_version": "2026-02-24",
+  "owner": "carla-core",
+  "source": "task-3",
+  "target_languages": ["en", "de"],
+  "models": [
+    {
+      "profile": "base",
+      "model_id": "mlx-community/whisper-base",
+      "display_name": "Base (legacy compatibility)",
+      "policy_tier": "legacy_compatibility",
+      "cache_file_name": "mlx-community--whisper-base.mlxmodel",
+      "primary_download_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/model.bin",
+      "expected_size_bytes": { "min": 120000000, "max": 180000000 },
+      "required_artifacts": [
+        { "relative_path": "config.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/config.json", "sha256": null },
+        { "relative_path": "generation_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/generation_config.json", "sha256": null },
+        { "relative_path": "preprocessor_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/preprocessor_config.json", "sha256": null },
+        { "relative_path": "tokenizer.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/tokenizer.json", "sha256": null },
+        { "relative_path": "tokenizer_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/tokenizer_config.json", "sha256": null },
+        { "relative_path": "vocab.json", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/vocab.json", "sha256": null },
+        { "relative_path": "merges.txt", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/merges.txt", "sha256": null },
+        { "relative_path": "model.bin", "source_url": "https://huggingface.co/mlx-community/whisper-base/resolve/main/model.bin", "sha256": null }
+      ]
+    },
+    {
+      "profile": "small",
+      "model_id": "mlx-community/whisper-small",
+      "display_name": "Small (pressure fallback)",
+      "policy_tier": "pressure_fallback",
+      "cache_file_name": "mlx-community--whisper-small.mlxmodel",
+      "primary_download_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/model.bin",
+      "expected_size_bytes": { "min": 380000000, "max": 600000000 },
+      "required_artifacts": [
+        { "relative_path": "config.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/config.json", "sha256": null },
+        { "relative_path": "generation_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/generation_config.json", "sha256": null },
+        { "relative_path": "preprocessor_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/preprocessor_config.json", "sha256": null },
+        { "relative_path": "tokenizer.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/tokenizer.json", "sha256": null },
+        { "relative_path": "tokenizer_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/tokenizer_config.json", "sha256": null },
+        { "relative_path": "vocab.json", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/vocab.json", "sha256": null },
+        { "relative_path": "merges.txt", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/merges.txt", "sha256": null },
+        { "relative_path": "model.bin", "source_url": "https://huggingface.co/mlx-community/whisper-small/resolve/main/model.bin", "sha256": null }
+      ]
+    },
+    {
+      "profile": "medium",
+      "model_id": "mlx-community/whisper-medium",
+      "display_name": "Medium (default)",
+      "policy_tier": "required_default",
+      "cache_file_name": "mlx-community--whisper-medium.mlxmodel",
+      "primary_download_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/model.bin",
+      "expected_size_bytes": { "min": 1100000000, "max": 1900000000 },
+      "required_artifacts": [
+        { "relative_path": "config.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/config.json", "sha256": null },
+        { "relative_path": "generation_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/generation_config.json", "sha256": null },
+        { "relative_path": "preprocessor_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/preprocessor_config.json", "sha256": null },
+        { "relative_path": "tokenizer.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/tokenizer.json", "sha256": null },
+        { "relative_path": "tokenizer_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/tokenizer_config.json", "sha256": null },
+        { "relative_path": "vocab.json", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/vocab.json", "sha256": null },
+        { "relative_path": "merges.txt", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/merges.txt", "sha256": null },
+        { "relative_path": "model.bin", "source_url": "https://huggingface.co/mlx-community/whisper-medium/resolve/main/model.bin", "sha256": null }
+      ]
+    },
+    {
+      "profile": "large",
+      "model_id": "mlx-community/whisper-large-v3",
+      "display_name": "Large v3 (optional quality)",
+      "policy_tier": "optional_quality",
+      "cache_file_name": "mlx-community--whisper-large-v3.mlxmodel",
+      "primary_download_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/model.bin",
+      "expected_size_bytes": { "min": 2100000000, "max": 4200000000 },
+      "required_artifacts": [
+        { "relative_path": "config.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/config.json", "sha256": null },
+        { "relative_path": "generation_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/generation_config.json", "sha256": null },
+        { "relative_path": "preprocessor_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/preprocessor_config.json", "sha256": null },
+        { "relative_path": "tokenizer.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/tokenizer.json", "sha256": null },
+        { "relative_path": "tokenizer_config.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/tokenizer_config.json", "sha256": null },
+        { "relative_path": "vocab.json", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/vocab.json", "sha256": null },
+        { "relative_path": "merges.txt", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/merges.txt", "sha256": null },
+        { "relative_path": "model.bin", "source_url": "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/model.bin", "sha256": null }
+      ]
+    }
+  ]
+}

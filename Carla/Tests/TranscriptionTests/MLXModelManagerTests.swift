@@ -34,7 +34,7 @@ final class MLXModelManagerTests: XCTestCase {
     let mediumID = await modelManager.resolveModelID(fromSettingsValue: "medium")
     let largeID = await modelManager.resolveModelID(fromSettingsValue: "large")
 
-    XCTAssertEqual(baseID, "mlx-community/whisper-base")
+    XCTAssertEqual(baseID, "mlx-community/whisper-medium")
     XCTAssertEqual(smallID, "mlx-community/whisper-small")
     XCTAssertEqual(mediumID, "mlx-community/whisper-medium")
     XCTAssertEqual(largeID, "mlx-community/whisper-large-v3")
@@ -46,20 +46,34 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertEqual(resolved, existing)
   }
 
-  func testResolveModelIDFallsBackToBase() async {
+  func testResolveModelIDFallsBackToMediumDefault() async {
     let resolved = await modelManager.resolveModelID(fromSettingsValue: "unknown-model")
-    XCTAssertEqual(resolved, "mlx-community/whisper-base")
+    XCTAssertEqual(resolved, "mlx-community/whisper-medium")
   }
 
   // MARK: - Required Models
 
-  func testRequiredModelsIncludesBase() {
-    XCTAssertTrue(MLXModelManager.requiredModels.contains(.base))
+  func testRequiredModelsIncludesMediumDefault() {
+    XCTAssertTrue(MLXModelManager.requiredModels.contains(.medium))
   }
 
   func testOptionalModelsExcludesBase() {
     XCTAssertFalse(MLXModelManager.optionalModels.contains(.base))
     XCTAssertTrue(MLXModelManager.optionalModels.contains(.small))
+  }
+
+  func testMediumDescriptorPolicyAndLanguages() throws {
+    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
+    XCTAssertEqual(descriptor.policyTier, .requiredDefault)
+    XCTAssertEqual(Set(descriptor.targetLanguageCodes), Set(["en", "de"]))
+  }
+
+  func testDescriptorsExposeRequiredArtifactContract() {
+    for descriptor in MLXModelCatalog.descriptors {
+      XCTAssertEqual(descriptor.requiredArtifacts.count, 8)
+      XCTAssertTrue(descriptor.requiredArtifacts.contains { $0.relativePath == "model.bin" })
+      XCTAssertTrue(descriptor.requiredArtifacts.allSatisfy { $0.sourceURL.absoluteString.contains(descriptor.modelID) })
+    }
   }
 
   // MARK: - Readiness and Validation
@@ -70,7 +84,7 @@ final class MLXModelManagerTests: XCTestCase {
   }
 
   func testAreRequiredModelsAvailableWhenRequiredMLXArtifactExists() async throws {
-    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.base])
+    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
@@ -109,7 +123,7 @@ final class MLXModelManagerTests: XCTestCase {
   }
 
   func testCleanupLegacyGGMLArtifactsRunsAfterMLXReadiness() async throws {
-    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.base])
+    let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
