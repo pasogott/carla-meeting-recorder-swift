@@ -104,7 +104,9 @@ struct ModelDownloadState: Equatable {
   var currentModel: ASRModelProfile? = nil
   var progress: Double = 0
   var progressText: String = ""
+  var errorTitle: String? = nil
   var errorMessage: String? = nil
+  var recoverySuggestion: String? = nil
 
   var isDownloading: Bool {
     status == .downloading
@@ -503,17 +505,23 @@ final class AppState: ObservableObject {
   /// Checks if required MLX models are available locally.
   func checkModelAvailability() async {
     guard isMLXSupportedHardware else {
+      let guidance = MLXErrorUX.guidance(for: mlxUnsupportedMessage)
       modelDownload.status = .failed
       modelDownload.currentModel = nil
       modelDownload.progress = 0
       modelDownload.progressText = "Unavailable on Intel"
+      modelDownload.errorTitle = guidance.title
       modelDownload.errorMessage = mlxUnsupportedMessage
+      modelDownload.recoverySuggestion = guidance.recovery
       onboarding.modelsReady = false
       return
     }
 
     modelDownload.status = .checking
     modelDownload.progressText = "Checking model availability..."
+    modelDownload.errorTitle = nil
+    modelDownload.errorMessage = nil
+    modelDownload.recoverySuggestion = nil
 
     let modelsAvailable = await areRequiredModelsReadyForOnboarding()
 
@@ -522,14 +530,20 @@ final class AppState: ObservableObject {
       modelDownload.currentModel = nil
       modelDownload.progress = 1
       modelDownload.progressText = "Models ready"
+      modelDownload.errorTitle = nil
       modelDownload.errorMessage = nil
+      modelDownload.recoverySuggestion = nil
       onboarding.modelsReady = true
     } else {
+      let message = "Required MLX model artifacts are missing or invalid."
+      let guidance = MLXErrorUX.guidance(for: message)
       modelDownload.status = .failed
       modelDownload.currentModel = nil
       modelDownload.progress = 0
       modelDownload.progressText = "Models not ready"
-      modelDownload.errorMessage = "Required MLX model artifacts are missing or invalid."
+      modelDownload.errorTitle = guidance.title
+      modelDownload.errorMessage = message
+      modelDownload.recoverySuggestion = guidance.recovery
       onboarding.modelsReady = false
     }
   }
@@ -537,11 +551,14 @@ final class AppState: ObservableObject {
   /// Downloads required MLX models with progress updates.
   func downloadRequiredModels() async {
     guard isMLXSupportedHardware else {
+      let guidance = MLXErrorUX.guidance(for: mlxUnsupportedMessage)
       modelDownload.status = .failed
       modelDownload.currentModel = nil
       modelDownload.progress = 0
       modelDownload.progressText = "Unavailable on Intel"
+      modelDownload.errorTitle = guidance.title
       modelDownload.errorMessage = mlxUnsupportedMessage
+      modelDownload.recoverySuggestion = guidance.recovery
       onboarding.modelsReady = false
       return
     }
@@ -556,7 +573,9 @@ final class AppState: ObservableObject {
     modelDownload.currentModel = nil
     modelDownload.progress = 0
     modelDownload.progressText = ""
+    modelDownload.errorTitle = nil
     modelDownload.errorMessage = nil
+    modelDownload.recoverySuggestion = nil
     onboarding.modelsReady = false
 
     downloadTask = Task {
@@ -568,10 +587,13 @@ final class AppState: ObservableObject {
         if !isCurrentOperation { return }
 
         if let error = progress.error {
+          let guidance = MLXErrorUX.guidance(for: error)
           await MainActor.run {
             guard self.downloadOperationID == operationID else { return }
             modelDownload.status = .failed
+            modelDownload.errorTitle = guidance.title
             modelDownload.errorMessage = error
+            modelDownload.recoverySuggestion = guidance.recovery
             modelDownload.progressText = "Download failed"
             onboarding.modelsReady = false
           }
@@ -599,10 +621,17 @@ final class AppState: ObservableObject {
             modelDownload.progress = 1
             modelDownload.progressText = "Models ready"
             modelDownload.currentModel = nil
+            modelDownload.errorTitle = nil
+            modelDownload.errorMessage = nil
+            modelDownload.recoverySuggestion = nil
             onboarding.modelsReady = true
           } else if modelDownload.errorMessage == nil {
+            let fallbackMessage = "Download incomplete"
+            let guidance = MLXErrorUX.guidance(for: fallbackMessage)
             modelDownload.status = .failed
-            modelDownload.errorMessage = "Download incomplete"
+            modelDownload.errorTitle = guidance.title
+            modelDownload.errorMessage = fallbackMessage
+            modelDownload.recoverySuggestion = guidance.recovery
             onboarding.modelsReady = false
           }
         }

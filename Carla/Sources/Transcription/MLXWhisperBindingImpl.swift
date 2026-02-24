@@ -346,6 +346,22 @@ public actor MLXWhisperBindingImpl: MLXWhisperBinding {
       return .decodeFailure(message)
     }
 
-    return nil
+    let guidance = MLXErrorUX.guidance(for: message)
+    switch guidance.category {
+    case .corruptArtifacts:
+      return .modelNotLoaded(modelID)
+    case .unsupportedHardware:
+      return .runtimeFailure("Unsupported hardware for MLX inference. Apple Silicon is required.")
+    case .permissionDenied:
+      return .runtimeFailure("Permission denied while running MLX inference.")
+    case .network:
+      return .runtimeFailure("Network unavailable while resolving MLX artifacts.")
+    case .http:
+      return .runtimeFailure("HTTP failure while resolving MLX artifacts.")
+    case .diskFull:
+      return .runtimeFailure("Disk full while preparing MLX inference artifacts.")
+    case .unknown:
+      return nil
+    }
   }
 }
