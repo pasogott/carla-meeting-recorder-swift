@@ -58,6 +58,7 @@ enum SettingsTab: Hashable {
 struct AppSettings: Equatable {
   var selectedInputDevice: String
   var selectedOutputDevice: String
+  /// Persisted model selection. Accepts MLX model IDs and legacy profile aliases.
   var selectedModel: String
   var storagePath: String
   var launchAtLogin: Bool
@@ -67,12 +68,18 @@ struct AppSettings: Equatable {
   static let `default` = AppSettings(
     selectedInputDevice: "System Default Microphone",
     selectedOutputDevice: "System Default Output",
-    selectedModel: "base",
+    selectedModel: "mlx-community/whisper-base",
     storagePath: "~/Library/Application Support/Carla",
     launchAtLogin: false,
     showNotchOverlay: false,
     primaryLanguage: "en"
   )
+}
+
+struct MLXModelOption: Equatable, Hashable, Identifiable {
+  let id: String
+  let label: String
+  let profile: WhisperModel
 }
 
 // MARK: - Onboarding State
@@ -196,6 +203,29 @@ final class AppState: ObservableObject {
     static let onboardingCompleted = "at.cyberheld.carla.onboarding_completed"
   }
 
+  static let availableMLXModels: [MLXModelOption] = [
+    MLXModelOption(
+      id: "mlx-community/whisper-base",
+      label: "Whisper Base (MLX)",
+      profile: .base
+    ),
+    MLXModelOption(
+      id: "mlx-community/whisper-small",
+      label: "Whisper Small (MLX)",
+      profile: .small
+    ),
+    MLXModelOption(
+      id: "mlx-community/whisper-medium",
+      label: "Whisper Medium (MLX)",
+      profile: .medium
+    ),
+    MLXModelOption(
+      id: "mlx-community/whisper-large-v3",
+      label: "Whisper Large v3 (MLX)",
+      profile: .large
+    ),
+  ]
+
   #if canImport(Sparkle)
     private var updaterController: SPUStandardUpdaterController?
   #endif
@@ -267,6 +297,7 @@ final class AppState: ObservableObject {
     setupSearchSubscription()
 
     // Keep recording/transcription configuration in sync with settings.
+    settings = Self.normalizedSettings(settings)
     setupSettingsSubscription()
     Task { [weak self] in
       guard let self else { return }
@@ -318,6 +349,14 @@ final class AppState: ObservableObject {
     onboarding.legalAccepted
       && onboarding.modelsReady
       && permissionManager.allPermissionsGranted
+  }
+
+  var isMLXSupportedHardware: Bool {
+    Self.isMLXSupportedHardware
+  }
+
+  var mlxUnsupportedMessage: String {
+    "MLX transcription requires Apple Silicon. Intel Macs are currently unsupported."
   }
 
   // MARK: - Recording Actions
@@ -389,8 +428,18 @@ final class AppState: ObservableObject {
 
   // MARK: - Model Download Actions
 
-  /// Checks if required Whisper models are available locally.
+  /// Checks if required MLX models are available locally.
   func checkModelAvailability() async {
+    guard isMLXSupportedHardware else {
+      modelDownload.status = .failed
+      modelDownload.currentModel = nil
+      modelDownload.progress = 0
+      modelDownload.progressText = "Unavailable on Intel"
+      modelDownload.errorMessage = mlxUnsupportedMessage
+      onboarding.modelsReady = false
+      return
+    }
+
     modelDownload.status = .checking
     modelDownload.progressText = "Checking model availability..."
 
@@ -413,8 +462,18 @@ final class AppState: ObservableObject {
     }
   }
 
-  /// Downloads required Whisper models with progress updates.
+  /// Downloads required MLX models with progress updates.
   func downloadRequiredModels() async {
+    guard isMLXSupportedHardware else {
+      modelDownload.status = .failed
+      modelDownload.currentModel = nil
+      modelDownload.progress = 0
+      modelDownload.progressText = "Unavailable on Intel"
+      modelDownload.errorMessage = mlxUnsupportedMessage
+      onboarding.modelsReady = false
+      return
+    }
+
     // Cancel any existing download
     downloadTask?.cancel()
 
@@ -703,6 +762,14 @@ final class AppState: ObservableObject {
     #endif
   }
 
+  private static let isMLXSupportedHardware: Bool = {
+    #if arch(arm64)
+      return true
+    #else
+      return false
+    #endif
+  }()
+
   // MARK: - Private Helpers
 
   private func setupUpdater() {
@@ -809,8 +876,15 @@ final class AppState: ObservableObject {
       .removeDuplicates()
       .sink { [weak self] updatedSettings in
         guard let self else { return }
+
+        let normalized = Self.normalizedSettings(updatedSettings)
+        if normalized != updatedSettings {
+          self.settings = normalized
+          return
+        }
+
         Task {
-          await self.applyRecordingConfiguration(updatedSettings)
+          await self.applyRecordingConfiguration(normalized)
         }
       }
       .store(in: &cancellables)
@@ -822,17 +896,23 @@ final class AppState: ObservableObject {
   }
 
   private static func makeRecordingConfiguration(from settings: AppSettings) -> RecordingConfiguration {
-    let normalizedLanguage = settings.primaryLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
-    let selectedLanguage = normalizedLanguage.isEmpty ? nil : normalizedLanguage.lowercased()
-
     return RecordingConfiguration(
       whisperModel: whisperModel(from: settings.selectedModel),
-      primaryLanguageCode: selectedLanguage
+      primaryLanguageCode: canonicalLanguageCode(from: settings.primaryLanguage)
     )
   }
 
-  private static func whisperModel(from rawValue: String) -> WhisperModel {
-    switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  private static func whisperModel(from selectedModelValue: String) -> WhisperModel {
+    let normalized = selectedModelValue
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+
+    if let byModelID = availableMLXModels.first(where: { $0.id == normalized }) {
+      return byModelID.profile
+    }
+
+    // Legacy fallback values kept for pre-MLX settings migration.
+    switch normalized {
     case "base":
       return .base
     case "small":
@@ -844,6 +924,58 @@ final class AppState: ObservableObject {
     default:
       return .base
     }
+  }
+
+  private static func canonicalLanguageCode(from rawLanguage: String) -> String? {
+    let trimmed = rawLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let sanitized = trimmed.replacingOccurrences(of: "_", with: "-")
+    let parts = sanitized.split(separator: "-", omittingEmptySubsequences: false)
+    guard parts.count == 1 || parts.count == 2 else { return nil }
+
+    let language = String(parts[0])
+    guard language.count == 2, language.allSatisfy(\.isLetter) else { return nil }
+
+    let canonicalLanguage = language.lowercased()
+
+    if parts.count == 1 {
+      return canonicalLanguage
+    }
+
+    let region = String(parts[1])
+    guard region.count == 2, region.allSatisfy(\.isLetter) else { return nil }
+    return "\(canonicalLanguage)-\(region.uppercased())"
+  }
+
+  private static func canonicalModelID(from rawModelValue: String) -> String {
+    let normalized = rawModelValue
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+
+    if availableMLXModels.contains(where: { $0.id == normalized }) {
+      return normalized
+    }
+
+    switch normalized {
+    case "base":
+      return "mlx-community/whisper-base"
+    case "small":
+      return "mlx-community/whisper-small"
+    case "medium":
+      return "mlx-community/whisper-medium"
+    case "large":
+      return "mlx-community/whisper-large-v3"
+    default:
+      return "mlx-community/whisper-base"
+    }
+  }
+
+  private static func normalizedSettings(_ settings: AppSettings) -> AppSettings {
+    var normalized = settings
+    normalized.selectedModel = canonicalModelID(from: settings.selectedModel)
+    normalized.primaryLanguage = canonicalLanguageCode(from: settings.primaryLanguage) ?? ""
+    return normalized
   }
 
   private func startDurationTimer() {

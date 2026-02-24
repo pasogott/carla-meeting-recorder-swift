@@ -8,8 +8,8 @@ struct SettingsView: View {
     "System Default Microphone", "MacBook Microphone", "External USB Microphone",
   ]
   private let outputDevices = ["System Default Output", "MacBook Speakers", "AirPods Pro"]
-  private let whisperModels = ["base", "small", "medium", "large"]
-  private let languages = ["en", "de", "fr", "es", "it"]
+  private let modelOptions = AppState.availableMLXModels
+  private let languages = ["", "en", "de", "fr", "es", "it", "pt-BR"]
 
   var body: some View {
     TabView(selection: $coordinator.selectedSettingsTab) {
@@ -31,7 +31,7 @@ struct SettingsView: View {
 
       TranscriptionSettingsTab(
         settings: $coordinator.settings,
-        models: whisperModels,
+        models: modelOptions,
         languages: languages
       )
       .tabItem {
@@ -117,35 +117,46 @@ private struct AudioSettingsTab: View {
 
 private struct TranscriptionSettingsTab: View {
   @Binding var settings: AppSettings
-  let models: [String]
+  let models: [MLXModelOption]
   let languages: [String]
 
   var body: some View {
     Form {
       Section("Model") {
-        Picker("Whisper Model", selection: $settings.selectedModel) {
-          ForEach(models, id: \.self) { Text($0.capitalized).tag($0) }
+        Picker("MLX Model", selection: $settings.selectedModel) {
+          ForEach(models) { model in
+            Text(model.label).tag(model.id)
+          }
         }
         .pickerStyle(.menu)
 
-        Text("Larger models are more accurate but slower.")
+        Text("MLX Whisper model IDs are used for runtime selection and migration safety.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
 
       Section("Language") {
         Picker("Primary Language", selection: $settings.primaryLanguage) {
-          ForEach(languages, id: \.self) { Text($0.uppercased()).tag($0) }
+          ForEach(languages, id: \.self) { language in
+            Text(languageLabel(language)).tag(language)
+          }
         }
         .pickerStyle(.menu)
 
-        Text("Used for initial detection. Auto-detect is used as fallback.")
+        Text("Language codes are validated and canonicalized (e.g. en, pt-BR).")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
     }
     .formStyle(.grouped)
     .scrollDisabled(true)
+  }
+
+  private func languageLabel(_ code: String) -> String {
+    if code.isEmpty {
+      return "Auto Detect"
+    }
+    return code
   }
 }
 
@@ -230,6 +241,12 @@ private struct OnboardingSettingsTab: View {
       }
 
       Section("Models") {
+        if !appState.isMLXSupportedHardware {
+          Text(appState.mlxUnsupportedMessage)
+            .font(.caption)
+            .foregroundStyle(.red)
+        }
+
         HStack {
           Text("Status")
           Spacer()
@@ -244,6 +261,7 @@ private struct OnboardingSettingsTab: View {
             }
           }
           .buttonStyle(.bordered)
+          .disabled(!appState.isMLXSupportedHardware)
 
           Button("Download Models") {
             Task { @MainActor in
@@ -251,7 +269,7 @@ private struct OnboardingSettingsTab: View {
             }
           }
           .buttonStyle(.bordered)
-          .disabled(appState.modelDownload.isDownloading)
+          .disabled(appState.modelDownload.isDownloading || !appState.isMLXSupportedHardware)
         }
       }
 
@@ -280,6 +298,9 @@ private struct OnboardingSettingsTab: View {
   }
 
   private var modelStatusText: String {
+    if !appState.isMLXSupportedHardware {
+      return "Unsupported (Intel)"
+    }
     if appState.modelDownload.isDownloading {
       return "Downloading"
     }
@@ -293,6 +314,9 @@ private struct OnboardingSettingsTab: View {
   }
 
   private var modelStatusColor: Color {
+    if !appState.isMLXSupportedHardware {
+      return .red
+    }
     if appState.modelDownload.isDownloading {
       return .blue
     }
