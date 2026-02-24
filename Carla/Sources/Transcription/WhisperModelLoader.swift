@@ -1,9 +1,9 @@
 import Foundation
 
-/// Manages whisper.cpp model file locations and lifecycle.
+/// Manages transcription model file locations and lifecycle.
 public actor WhisperModelLoader {
   /// Model file information with path and availability status.
-  public struct ModelFile: Sendable {
+  public struct ModelFile: Sendable, Equatable {
     public let model: WhisperModel
     public let url: URL
     public let sizeBytes: Int64?
@@ -17,9 +17,33 @@ public actor WhisperModelLoader {
     }
   }
 
+  /// MLX model file information with path and availability status.
+  public struct ManagedModelFile: Sendable, Equatable {
+    public let modelID: String
+    public let url: URL
+    public let sizeBytes: Int64?
+    public let isAvailable: Bool
+
+    public init(modelID: String, url: URL, sizeBytes: Int64?, isAvailable: Bool) {
+      self.modelID = modelID
+      self.url = url
+      self.sizeBytes = sizeBytes
+      self.isAvailable = isAvailable
+    }
+  }
+
+  /// Known legacy ggml model artifacts from whisper.cpp lifecycle.
+  public enum LegacyGGMLModel: String, CaseIterable, Sendable {
+    case base = "ggml-base.bin"
+    case small = "ggml-small.bin"
+    case medium = "ggml-medium.bin"
+    case large = "ggml-large.bin"
+  }
+
   /// Errors from model loading operations.
   public enum ModelLoaderError: Error, Sendable {
     case modelNotFound(WhisperModel)
+    case modelIDNotFound(String)
     case modelDirectoryCreationFailed(Error)
     case invalidModelFile(URL)
   }
@@ -52,55 +76,72 @@ public actor WhisperModelLoader {
     }
   }
 
-  /// Returns the expected file path for a given model.
+  /// Returns the expected file path for a given legacy profile model.
   public func modelFilePath(for model: WhisperModel) -> URL {
     modelsDirectory.appendingPathComponent(modelFileName(for: model))
   }
 
-  /// Returns the canonical file name for a whisper model.
+  /// Returns the expected file path for a managed MLX model ID.
+  public func modelFilePath(forModelID modelID: String, cacheFileName: String? = nil) -> URL {
+    let fileName = cacheFileName ?? sanitizedModelCacheName(for: modelID)
+    return modelsDirectory.appendingPathComponent(fileName)
+  }
+
+  /// Returns the canonical file name for a whisper legacy model.
   public func modelFileName(for model: WhisperModel) -> String {
     switch model {
     case .base:
-      return "ggml-base.bin"
+      return LegacyGGMLModel.base.rawValue
     case .small:
-      return "ggml-small.bin"
+      return LegacyGGMLModel.small.rawValue
     case .medium:
-      return "ggml-medium.bin"
+      return LegacyGGMLModel.medium.rawValue
     case .large:
-      return "ggml-large.bin"
+      return LegacyGGMLModel.large.rawValue
     }
   }
 
-  /// Checks if a model is available locally.
+  /// Checks if a legacy profile model is available locally.
   public func isModelAvailable(_ model: WhisperModel) -> Bool {
     let path = modelFilePath(for: model)
     return fileManager.fileExists(atPath: path.path)
   }
 
-  /// Returns information about a specific model file.
+  /// Checks if a managed MLX model ID is available locally.
+  public func isModelIDAvailable(_ modelID: String, cacheFileName: String? = nil) -> Bool {
+    let path = modelFilePath(forModelID: modelID, cacheFileName: cacheFileName)
+    return fileManager.fileExists(atPath: path.path)
+  }
+
+  /// Returns information about a specific legacy model file.
   public func modelInfo(for model: WhisperModel) -> ModelFile {
     let url = modelFilePath(for: model)
     let exists = fileManager.fileExists(atPath: url.path)
-    var sizeBytes: Int64? = nil
-
-    if exists {
-      do {
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        sizeBytes = attributes[.size] as? Int64
-      } catch {
-        // Ignore attribute errors, just report no size
-      }
-    }
-
+    let sizeBytes = fileSizeIfExists(at: url)
     return ModelFile(model: model, url: url, sizeBytes: sizeBytes, isAvailable: exists)
   }
 
-  /// Returns information about all supported models.
+  /// Returns information about a specific managed MLX model file.
+  public func modelInfo(forModelID modelID: String, cacheFileName: String? = nil) -> ManagedModelFile {
+    let url = modelFilePath(forModelID: modelID, cacheFileName: cacheFileName)
+    let exists = fileManager.fileExists(atPath: url.path)
+    let sizeBytes = fileSizeIfExists(at: url)
+    return ManagedModelFile(modelID: modelID, url: url, sizeBytes: sizeBytes, isAvailable: exists)
+  }
+
+  /// Returns information about all supported legacy profile models.
   public func allModels() -> [ModelFile] {
     [WhisperModel.base, .small, .medium, .large].map { modelInfo(for: $0) }
   }
 
-  /// Returns the path to a model file, throwing if not available.
+  /// Returns information about all provided managed model IDs.
+  public func allModels(modelIDs: [String], cacheFileNames: [String: String] = [:]) -> [ManagedModelFile] {
+    modelIDs.map { modelID in
+      modelInfo(forModelID: modelID, cacheFileName: cacheFileNames[modelID])
+    }
+  }
+
+  /// Returns the path to a legacy model file, throwing if not available.
   public func requireModelPath(for model: WhisperModel) throws -> URL {
     let url = modelFilePath(for: model)
     guard fileManager.fileExists(atPath: url.path) else {
@@ -109,21 +150,98 @@ public actor WhisperModelLoader {
     return url
   }
 
-  /// Expected download URLs for Hugging Face hosted models.
+  /// Returns the path to a managed model file, throwing if not available.
+  public func requireModelPath(forModelID modelID: String, cacheFileName: String? = nil) throws -> URL {
+    let url = modelFilePath(forModelID: modelID, cacheFileName: cacheFileName)
+    guard fileManager.fileExists(atPath: url.path) else {
+      throw ModelLoaderError.modelIDNotFound(modelID)
+    }
+    return url
+  }
+
+  /// Expected download URLs for Hugging Face hosted legacy ggml models.
   public func downloadURL(for model: WhisperModel) -> URL {
     let baseURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
     let fileName = modelFileName(for: model)
     return URL(string: "\(baseURL)/\(fileName)")!
   }
 
-  /// Registers a model file from an external location (e.g., after download).
-  /// Copies or moves the file to the models directory.
+  /// Registers a legacy model file from an external location.
   public func registerModel(_ model: WhisperModel, from sourceURL: URL, copy: Bool = true) throws {
     try ensureModelsDirectoryExists()
-
     let destinationURL = modelFilePath(for: model)
+    try replaceItem(at: destinationURL, with: sourceURL, copy: copy)
+  }
 
-    // Remove existing file if present
+  /// Registers a managed model file from an external location.
+  public func registerModelID(
+    _ modelID: String,
+    cacheFileName: String? = nil,
+    from sourceURL: URL,
+    copy: Bool = true
+  ) throws {
+    try ensureModelsDirectoryExists()
+    let destinationURL = modelFilePath(forModelID: modelID, cacheFileName: cacheFileName)
+    try replaceItem(at: destinationURL, with: sourceURL, copy: copy)
+  }
+
+  /// Removes a legacy model file from the models directory.
+  public func removeModel(_ model: WhisperModel) throws {
+    let url = modelFilePath(for: model)
+    if fileManager.fileExists(atPath: url.path) {
+      try fileManager.removeItem(at: url)
+    }
+  }
+
+  /// Removes a managed model file from the models directory.
+  public func removeModelID(_ modelID: String, cacheFileName: String? = nil) throws {
+    let url = modelFilePath(forModelID: modelID, cacheFileName: cacheFileName)
+    if fileManager.fileExists(atPath: url.path) {
+      try fileManager.removeItem(at: url)
+    }
+  }
+
+  /// Lists legacy ggml artifacts currently on disk.
+  public func legacyGGMLFiles() -> [URL] {
+    LegacyGGMLModel.allCases
+      .map { modelsDirectory.appendingPathComponent($0.rawValue) }
+      .filter { fileManager.fileExists(atPath: $0.path) }
+  }
+
+  /// Removes all discovered legacy ggml artifacts and returns deleted URLs.
+  public func removeLegacyGGMLFiles() throws -> [URL] {
+    let files = legacyGGMLFiles()
+    for file in files {
+      try fileManager.removeItem(at: file)
+    }
+    return files
+  }
+
+  /// Returns the models directory URL.
+  public var directory: URL {
+    modelsDirectory
+  }
+
+  private func fileSizeIfExists(at url: URL) -> Int64? {
+    guard fileManager.fileExists(atPath: url.path) else { return nil }
+    do {
+      let attributes = try fileManager.attributesOfItem(atPath: url.path)
+      return attributes[.size] as? Int64
+    } catch {
+      return nil
+    }
+  }
+
+  private func sanitizedModelCacheName(for modelID: String) -> String {
+    let safe = modelID
+      .lowercased()
+      .replacingOccurrences(of: "/", with: "--")
+      .replacingOccurrences(of: ":", with: "-")
+      .replacingOccurrences(of: " ", with: "-")
+    return "\(safe).mlxmodel"
+  }
+
+  private func replaceItem(at destinationURL: URL, with sourceURL: URL, copy: Bool) throws {
     if fileManager.fileExists(atPath: destinationURL.path) {
       try fileManager.removeItem(at: destinationURL)
     }
@@ -133,18 +251,5 @@ public actor WhisperModelLoader {
     } else {
       try fileManager.moveItem(at: sourceURL, to: destinationURL)
     }
-  }
-
-  /// Removes a model file from the models directory.
-  public func removeModel(_ model: WhisperModel) throws {
-    let url = modelFilePath(for: model)
-    if fileManager.fileExists(atPath: url.path) {
-      try fileManager.removeItem(at: url)
-    }
-  }
-
-  /// Returns the models directory URL.
-  public var directory: URL {
-    modelsDirectory
   }
 }
