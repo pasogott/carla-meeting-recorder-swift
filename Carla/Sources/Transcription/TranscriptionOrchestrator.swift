@@ -2,13 +2,13 @@ import Foundation
 
 /// Input configuration for realtime transcription jobs.
 public struct RealtimeTranscriptionJobConfiguration: Sendable {
-  public let model: WhisperModel
+  public let model: ASRModelProfile
   public let chunkDuration: TimeInterval
   public let language: TranscriptionLanguageConfiguration
   public let speakerMapper: SpeakerMapper
 
   public init(
-    model: WhisperModel = .base,
+    model: ASRModelProfile = .base,
     chunkDuration: TimeInterval = 2.0,
     language: TranscriptionLanguageConfiguration,
     speakerMapper: SpeakerMapper = SpeakerMapper()
@@ -24,14 +24,14 @@ public struct RealtimeTranscriptionJobConfiguration: Sendable {
 public struct PostRecordingPolishRequest: Sendable {
   public let audioFileURL: URL
   public let source: TranscriptionTrackSource
-  public let model: WhisperModel
+  public let model: ASRModelProfile
   public let language: TranscriptionLanguageConfiguration
   public let speakerMapper: SpeakerMapper
 
   public init(
     audioFileURL: URL,
     source: TranscriptionTrackSource,
-    model: WhisperModel = .small,
+    model: ASRModelProfile = .small,
     language: TranscriptionLanguageConfiguration,
     speakerMapper: SpeakerMapper = SpeakerMapper()
   ) {
@@ -49,18 +49,22 @@ public actor TranscriptionJobOrchestrator {
     var chunker: RealtimeAudioChunker
     let configuration: RealtimeTranscriptionJobConfiguration
     var mergedSegments: [TranscriptSegment]
+    let startedUptime: TimeInterval
   }
 
-  private let engine: WhisperTranscribingEngine
+  private let engine: ASRTranscribingEngine
   private let merger: TranscriptSegmentMerger
+  private let metricsHook: ASRMetricsHook
   private var realtimeJobs: [UUID: RealtimeState] = [:]
 
   public init(
-    engine: WhisperTranscribingEngine,
-    merger: TranscriptSegmentMerger = TranscriptSegmentMerger()
+    engine: ASRTranscribingEngine,
+    merger: TranscriptSegmentMerger = TranscriptSegmentMerger(),
+    metricsHook: ASRMetricsHook = NoopASRMetricsHook()
   ) {
     self.engine = engine
     self.merger = merger
+    self.metricsHook = metricsHook
   }
 
   /// Starts a realtime transcription job and returns its handle.
@@ -69,7 +73,8 @@ public actor TranscriptionJobOrchestrator {
     realtimeJobs[id] = RealtimeState(
       chunker: RealtimeAudioChunker(chunkDuration: configuration.chunkDuration),
       configuration: configuration,
-      mergedSegments: []
+      mergedSegments: [],
+      startedUptime: ProcessInfo.processInfo.systemUptime
     )
     return id
   }
@@ -77,10 +82,13 @@ public actor TranscriptionJobOrchestrator {
   /// Ingests packet data and returns latest merged transcript state.
   public func ingest(_ packet: AudioPacket, for jobID: UUID) async throws -> [TranscriptSegment] {
     guard var state = realtimeJobs[jobID] else {
-      throw WhisperEngineError.runtimeFailure("unknown realtime job id")
+      throw ASREngineError.runtimeFailure("unknown realtime job id")
     }
 
     let chunks = state.chunker.append(packet: packet)
+    metricsHook.record(
+      .queueBackpressure(operation: .streamChunk, queuedItems: chunks.count, droppedItems: 0))
+
     let incoming = try await transcribeChunks(chunks, configuration: state.configuration)
     state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
     realtimeJobs[jobID] = state
@@ -93,13 +101,24 @@ public actor TranscriptionJobOrchestrator {
   /// On failure, the job is retained so callers can decide whether to retry or cancel.
   public func finishRealtimeJob(_ jobID: UUID) async throws -> [TranscriptSegment] {
     guard var state = realtimeJobs[jobID] else {
-      throw WhisperEngineError.runtimeFailure("unknown realtime job id")
+      throw ASREngineError.runtimeFailure("unknown realtime job id")
     }
 
+    let finishStart = ProcessInfo.processInfo.systemUptime
     let chunks = state.chunker.flushFinal()
+    metricsHook.record(
+      .queueBackpressure(operation: .finishRealtimeJob, queuedItems: chunks.count, droppedItems: 0))
+
     let incoming = try await transcribeChunks(chunks, configuration: state.configuration)
     state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
     realtimeJobs.removeValue(forKey: jobID)
+
+    let finishDurationMs = (ProcessInfo.processInfo.systemUptime - finishStart) * 1000
+    metricsHook.record(.latency(operation: .finishRealtimeJob, durationMs: finishDurationMs, success: true))
+
+    let stopToFinalMs = (ProcessInfo.processInfo.systemUptime - state.startedUptime) * 1000
+    metricsHook.record(.stopToFinal(durationMs: stopToFinalMs))
+
     return state.mergedSegments
   }
 
@@ -169,33 +188,53 @@ public actor TranscriptionJobOrchestrator {
 
   private func transcribeChunkWithFallback(
     _ chunk: AudioChunk,
-    model: WhisperModel,
+    model: ASRModelProfile,
     language: TranscriptionLanguageConfiguration,
-    hint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult {
+    hint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult {
+    let start = ProcessInfo.processInfo.systemUptime
     do {
-      return try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
+      let result = try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
+      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+      metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: true))
+      return result
     } catch {
       guard let fallback = language.fallbackHint(after: error, previousHint: hint) else {
+        let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: false))
         throw error
       }
-      return try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: fallback)
+      metricsHook.record(.retry(operation: .streamChunk, attempt: 2, reason: "language-fallback"))
+      let result = try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: fallback)
+      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+      metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: true))
+      return result
     }
   }
 
   private func transcribeFileWithFallback(
     url: URL,
-    model: WhisperModel,
+    model: ASRModelProfile,
     language: TranscriptionLanguageConfiguration,
-    hint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult {
+    hint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult {
+    let start = ProcessInfo.processInfo.systemUptime
     do {
-      return try await engine.transcribeAudioFile(at: url, model: model, languageHint: hint)
+      let result = try await engine.transcribeAudioFile(at: url, model: model, languageHint: hint)
+      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+      metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: true))
+      return result
     } catch {
       guard let fallback = language.fallbackHint(after: error, previousHint: hint) else {
+        let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: false))
         throw error
       }
-      return try await engine.transcribeAudioFile(at: url, model: model, languageHint: fallback)
+      metricsHook.record(.retry(operation: .transcribeFile, attempt: 2, reason: "language-fallback"))
+      let result = try await engine.transcribeAudioFile(at: url, model: model, languageHint: fallback)
+      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+      metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: true))
+      return result
     }
   }
 }
