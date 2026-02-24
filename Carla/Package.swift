@@ -13,8 +13,7 @@ let package = Package(
         .library(name: "CarlaRecording", targets: ["CarlaRecording"])
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
-        .package(url: "https://github.com/ggerganov/whisper.spm.git", branch: "master")
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0")
     ],
     targets: [
         .target(
@@ -31,9 +30,7 @@ let package = Package(
         ),
         .target(
             name: "CarlaTranscription",
-            dependencies: [
-                .product(name: "whisper", package: "whisper.spm")
-            ],
+            dependencies: [],
             path: "Sources/Transcription"
         ),
         .target(

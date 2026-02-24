@@ -2,21 +2,21 @@ import XCTest
 
 @testable import CarlaTranscription
 
-final class WhisperModelManagerTests: XCTestCase {
+final class MLXModelManagerTests: XCTestCase {
 
   var tempDirectory: URL!
-  var modelLoader: WhisperModelLoader!
-  var modelManager: WhisperModelManager!
+  var modelLoader: MLXModelLoader!
+  var modelManager: MLXModelManager!
 
   override func setUp() async throws {
     try await super.setUp()
 
     tempDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("WhisperModelManagerTests-\(UUID().uuidString)")
+      .appendingPathComponent("MLXModelManagerTests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
-    modelLoader = WhisperModelLoader(modelsDirectory: tempDirectory)
-    modelManager = WhisperModelManager(modelLoader: modelLoader)
+    modelLoader = MLXModelLoader(modelsDirectory: tempDirectory)
+    modelManager = MLXModelManager(modelLoader: modelLoader)
   }
 
   override func tearDown() async throws {
@@ -54,12 +54,12 @@ final class WhisperModelManagerTests: XCTestCase {
   // MARK: - Required Models
 
   func testRequiredModelsIncludesBase() {
-    XCTAssertTrue(WhisperModelManager.requiredModels.contains(.base))
+    XCTAssertTrue(MLXModelManager.requiredModels.contains(.base))
   }
 
   func testOptionalModelsExcludesBase() {
-    XCTAssertFalse(WhisperModelManager.optionalModels.contains(.base))
-    XCTAssertTrue(WhisperModelManager.optionalModels.contains(.small))
+    XCTAssertFalse(MLXModelManager.optionalModels.contains(.base))
+    XCTAssertTrue(MLXModelManager.optionalModels.contains(.small))
   }
 
   // MARK: - Readiness and Validation

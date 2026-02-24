@@ -26,17 +26,17 @@ Documented: 2026-02-12
 
 **Rationale:** Live feedback is valuable during meetings. Post-recording polish corrects errors with full context. More complex but delivers the best user experience.
 
-## ADR-05: Whisper Models — "base" for Real-time, "small" for Polish
+## ADR-05: MLX Whisper Models — base for realtime, small for polish
 
-**Decision:** Use whisper.cpp "base" model (~150MB) for streaming transcription and "small" model (~500MB) for the post-recording accuracy pass.
+**Decision:** Use MLX Whisper `mlx-community/whisper-base` for realtime chunks and `mlx-community/whisper-small` for post-recording polish.
 
-**Rationale:** "base" is fast enough for real-time (~6x on M1). "small" provides significantly better accuracy for the final transcript. Two models on disk (~650MB total) is acceptable.
+**Rationale:** `base` keeps stop-to-final latency within realtime targets while `small` improves final transcript quality. Model IDs are stored canonically and legacy profile values (`base/small/medium/large`) map deterministically.
 
-## ADR-06: Language — User-set Primary + Auto-Detection Fallback
+## ADR-06: Language — Canonical Primary + Auto-Detection Fallback
 
-**Decision:** User sets a primary language in settings. Whisper uses this as `language` parameter. Falls back to auto-detection for other languages.
+**Decision:** User-selected language is canonicalized (`ll` or `ll-RR`) and passed as fixed language hint when valid. On unsupported-language failures, transcription retries with auto-detect.
 
-**Rationale:** Setting the language parameter boosts Whisper accuracy significantly for the primary language while remaining flexible for multilingual meetings.
+**Rationale:** Canonical validation prevents malformed hints and keeps fallback behavior deterministic in multilingual meetings.
 
 ## ADR-07: Database — GRDB (SQLite + FTS5)
 
@@ -80,7 +80,13 @@ Documented: 2026-02-12
 
 **Rationale:** Full v0.1 delivers a polished, shippable product rather than a rough prototype. 5–6 week timeline is acceptable.
 
-## ADR-14: LLM Summarization — Local Default + Optional Cloud
+## ADR-14: ASR Burn-in Validation + Rollback Guard
+
+**Decision:** MLX is primary ASR backend. During burn-in, optional shadow sampling can be enabled with `CARLA_ASR_SHADOW_SAMPLE_RATE` and bounded by `CARLA_ASR_BURN_IN_END`. Emergency rollback flag `CARLA_ASR_ROLLBACK_ENABLE` disables shadow burn-in path.
+
+**Rationale:** Enables evidence-driven rollout with bounded operational risk and explicit shutdown controls.
+
+## ADR-15: LLM Summarization — Local Default + Optional Cloud
 
 **Decision:** Phase 2 ships with local LLM (llama.cpp, Phi-3 Mini or similar) as default. Optional: user can enter their own OpenAI API key for cloud-based summarization.
 

@@ -61,6 +61,7 @@ public actor TranscriptionJobOrchestrator {
   private let engine: ASRTranscribingEngine
   private let shadowEngine: ASRTranscribingEngine?
   private let shadowHarness: ShadowTranscriptionHarness?
+  private let shouldRunShadow: @Sendable () -> Bool
   private let merger: TranscriptSegmentMerger
   private let metricsHook: ASRMetricsHook
   private var realtimeJobs: [UUID: RealtimeState] = [:]
@@ -69,12 +70,14 @@ public actor TranscriptionJobOrchestrator {
     engine: ASRTranscribingEngine,
     shadowEngine: ASRTranscribingEngine? = nil,
     shadowHarness: ShadowTranscriptionHarness? = nil,
+    shouldRunShadow: @escaping @Sendable () -> Bool = { true },
     merger: TranscriptSegmentMerger = TranscriptSegmentMerger(),
     metricsHook: ASRMetricsHook = NoopASRMetricsHook()
   ) {
     self.engine = engine
     self.shadowEngine = shadowEngine
     self.shadowHarness = shadowHarness
+    self.shouldRunShadow = shouldRunShadow
     self.merger = merger
     self.metricsHook = metricsHook
   }
@@ -453,7 +456,7 @@ public actor TranscriptionJobOrchestrator {
   private func callShadowChunk(_ chunk: AudioChunk, model: ASRModelProfile, hint: ASRLanguageHint?) async
     -> EngineCallOutcome?
   {
-    guard let shadowEngine else { return nil }
+    guard let shadowEngine, shouldRunShadow() else { return nil }
     let started = ProcessInfo.processInfo.systemUptime
     do {
       let result = try await shadowEngine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
@@ -494,7 +497,7 @@ public actor TranscriptionJobOrchestrator {
   private func callShadowFile(_ url: URL, model: ASRModelProfile, hint: ASRLanguageHint?) async
     -> EngineCallOutcome?
   {
-    guard let shadowEngine else { return nil }
+    guard let shadowEngine, shouldRunShadow() else { return nil }
     let started = ProcessInfo.processInfo.systemUptime
     do {
       let result = try await shadowEngine.transcribeAudioFile(at: url, model: model, languageHint: hint)

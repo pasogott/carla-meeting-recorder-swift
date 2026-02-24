@@ -5,34 +5,34 @@ import XCTest
 
 final class ASRContractsCompatibilityTests: XCTestCase {
   func testWhisperTypealiasesRemainCompatible() async throws {
-    struct StubBinding: WhisperCPPBinding {
+    actor StubBinding: MLXWhisperBinding {
       func transcribePCM(
         samples: [Float],
         sampleRate: Double,
-        model: ASRModelProfile,
-        languageHint: ASRLanguageHint?
-      ) async throws -> ASRTranscriptionResult {
-        _ = (samples, sampleRate, model, languageHint)
-        return ASRTranscriptionResult(
-          segments: [ASRSegment(startTime: 0, endTime: 1.0, text: "ok", confidence: 0.9)],
+        modelID: String,
+        languageCode: String?
+      ) async throws -> MLXTranscriptionPayload {
+        _ = (samples, sampleRate, modelID, languageCode)
+        return MLXTranscriptionPayload(
+          segments: [MLXSegmentPayload(startMs: 0, endMs: 1000, text: "ok", confidence: 0.9)],
           detectedLanguageCode: "en"
         )
       }
 
       func transcribeFile(
         fileURL: URL,
-        model: ASRModelProfile,
-        languageHint: ASRLanguageHint?
-      ) async throws -> ASRTranscriptionResult {
-        _ = (fileURL, model, languageHint)
-        return ASRTranscriptionResult(
-          segments: [ASRSegment(startTime: 0, endTime: 1.0, text: "file", confidence: 0.9)],
+        modelID: String,
+        languageCode: String?
+      ) async throws -> MLXTranscriptionPayload {
+        _ = (fileURL, modelID, languageCode)
+        return MLXTranscriptionPayload(
+          segments: [MLXSegmentPayload(startMs: 0, endMs: 1000, text: "file", confidence: 0.9)],
           detectedLanguageCode: "en"
         )
       }
     }
 
-    let engine: WhisperTranscribingEngine = WhisperCPPEngine(binding: StubBinding())
+    let engine: WhisperTranscribingEngine = MLXWhisperEngine(binding: StubBinding())
     let chunk = AudioChunk(
       startTime: 0,
       endTime: 1,

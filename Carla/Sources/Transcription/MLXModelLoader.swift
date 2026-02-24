@@ -1,15 +1,15 @@
 import Foundation
 
 /// Manages transcription model file locations and lifecycle.
-public actor WhisperModelLoader {
+public actor MLXModelLoader {
   /// Model file information with path and availability status.
   public struct ModelFile: Sendable, Equatable {
-    public let model: WhisperModel
+    public let model: ASRModelProfile
     public let url: URL
     public let sizeBytes: Int64?
     public let isAvailable: Bool
 
-    public init(model: WhisperModel, url: URL, sizeBytes: Int64?, isAvailable: Bool) {
+    public init(model: ASRModelProfile, url: URL, sizeBytes: Int64?, isAvailable: Bool) {
       self.model = model
       self.url = url
       self.sizeBytes = sizeBytes
@@ -32,7 +32,7 @@ public actor WhisperModelLoader {
     }
   }
 
-  /// Known legacy ggml model artifacts from whisper.cpp lifecycle.
+  /// Known legacy ggml model artifacts from pre-MLX lifecycle.
   public enum LegacyGGMLModel: String, CaseIterable, Sendable {
     case base = "ggml-base.bin"
     case small = "ggml-small.bin"
@@ -42,7 +42,7 @@ public actor WhisperModelLoader {
 
   /// Errors from model loading operations.
   public enum ModelLoaderError: Error, Sendable {
-    case modelNotFound(WhisperModel)
+    case modelNotFound(ASRModelProfile)
     case modelIDNotFound(String)
     case modelDirectoryCreationFailed(Error)
     case invalidModelFile(URL)
@@ -77,7 +77,7 @@ public actor WhisperModelLoader {
   }
 
   /// Returns the expected file path for a given legacy profile model.
-  public func modelFilePath(for model: WhisperModel) -> URL {
+  public func modelFilePath(for model: ASRModelProfile) -> URL {
     modelsDirectory.appendingPathComponent(modelFileName(for: model))
   }
 
@@ -88,7 +88,7 @@ public actor WhisperModelLoader {
   }
 
   /// Returns the canonical file name for a whisper legacy model.
-  public func modelFileName(for model: WhisperModel) -> String {
+  public func modelFileName(for model: ASRModelProfile) -> String {
     switch model {
     case .base:
       return LegacyGGMLModel.base.rawValue
@@ -102,7 +102,7 @@ public actor WhisperModelLoader {
   }
 
   /// Checks if a legacy profile model is available locally.
-  public func isModelAvailable(_ model: WhisperModel) -> Bool {
+  public func isModelAvailable(_ model: ASRModelProfile) -> Bool {
     let path = modelFilePath(for: model)
     return fileManager.fileExists(atPath: path.path)
   }
@@ -114,7 +114,7 @@ public actor WhisperModelLoader {
   }
 
   /// Returns information about a specific legacy model file.
-  public func modelInfo(for model: WhisperModel) -> ModelFile {
+  public func modelInfo(for model: ASRModelProfile) -> ModelFile {
     let url = modelFilePath(for: model)
     let exists = fileManager.fileExists(atPath: url.path)
     let sizeBytes = fileSizeIfExists(at: url)
@@ -131,7 +131,7 @@ public actor WhisperModelLoader {
 
   /// Returns information about all supported legacy profile models.
   public func allModels() -> [ModelFile] {
-    [WhisperModel.base, .small, .medium, .large].map { modelInfo(for: $0) }
+    [ASRModelProfile.base, .small, .medium, .large].map { modelInfo(for: $0) }
   }
 
   /// Returns information about all provided managed model IDs.
@@ -142,7 +142,7 @@ public actor WhisperModelLoader {
   }
 
   /// Returns the path to a legacy model file, throwing if not available.
-  public func requireModelPath(for model: WhisperModel) throws -> URL {
+  public func requireModelPath(for model: ASRModelProfile) throws -> URL {
     let url = modelFilePath(for: model)
     guard fileManager.fileExists(atPath: url.path) else {
       throw ModelLoaderError.modelNotFound(model)
@@ -159,15 +159,8 @@ public actor WhisperModelLoader {
     return url
   }
 
-  /// Expected download URLs for Hugging Face hosted legacy ggml models.
-  public func downloadURL(for model: WhisperModel) -> URL {
-    let baseURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-    let fileName = modelFileName(for: model)
-    return URL(string: "\(baseURL)/\(fileName)")!
-  }
-
   /// Registers a legacy model file from an external location.
-  public func registerModel(_ model: WhisperModel, from sourceURL: URL, copy: Bool = true) throws {
+  public func registerModel(_ model: ASRModelProfile, from sourceURL: URL, copy: Bool = true) throws {
     try ensureModelsDirectoryExists()
     let destinationURL = modelFilePath(for: model)
     try replaceItem(at: destinationURL, with: sourceURL, copy: copy)
@@ -186,7 +179,7 @@ public actor WhisperModelLoader {
   }
 
   /// Removes a legacy model file from the models directory.
-  public func removeModel(_ model: WhisperModel) throws {
+  public func removeModel(_ model: ASRModelProfile) throws {
     let url = modelFilePath(for: model)
     if fileManager.fileExists(atPath: url.path) {
       try fileManager.removeItem(at: url)

@@ -2,7 +2,7 @@ import Foundation
 
 /// Tracks download progress for a single model transfer.
 public struct ModelDownloadProgress: Sendable, Equatable {
-  public let model: WhisperModel
+  public let model: ASRModelProfile
   public let modelID: String
   public let bytesDownloaded: Int64
   public let totalBytes: Int64?
@@ -24,7 +24,7 @@ public struct ModelDownloadProgress: Sendable, Equatable {
   }
 
   public init(
-    model: WhisperModel,
+    model: ASRModelProfile,
     modelID: String? = nil,
     bytesDownloaded: Int64 = 0,
     totalBytes: Int64? = nil,
@@ -175,23 +175,23 @@ public enum MLXModelCatalog {
 }
 
 /// Manages downloading, validating, and migrating managed MLX model artifacts.
-public actor WhisperModelManager {
-  private let modelLoader: WhisperModelLoader
+public actor MLXModelManager {
+  private let modelLoader: MLXModelLoader
 
   /// Per-model producer tasks.
   private var downloadTasks: [String: Task<Void, Never>] = [:]
 
-  public init(modelLoader: WhisperModelLoader = WhisperModelLoader()) {
+  public init(modelLoader: MLXModelLoader = MLXModelLoader()) {
     self.modelLoader = modelLoader
   }
 
   /// Required profiles for backward compatibility with existing AppState wiring.
-  public static var requiredModels: [WhisperModel] {
+  public static var requiredModels: [ASRModelProfile] {
     MLXModelCatalog.requiredProfiles
   }
 
   /// Optional profiles for backward compatibility with existing UI model picker.
-  public static var optionalModels: [WhisperModel] {
+  public static var optionalModels: [ASRModelProfile] {
     [.small, .medium, .large]
   }
 
@@ -208,8 +208,8 @@ public actor WhisperModelManager {
   // MARK: - Availability
 
   /// Checks which required legacy profiles map to missing MLX models.
-  public func checkMissingModels() async -> [WhisperModel] {
-    var missing: [WhisperModel] = []
+  public func checkMissingModels() async -> [ASRModelProfile] {
+    var missing: [ASRModelProfile] = []
     for profile in Self.requiredModels {
       let modelID = MLXModelCatalog.modelID(for: profile)
       guard let descriptor = MLXModelCatalog.descriptorByID[modelID] else {
@@ -234,12 +234,12 @@ public actor WhisperModelManager {
   }
 
   /// Legacy model info shim retained for API compatibility.
-  public func getAllModelInfo() async -> [WhisperModelLoader.ModelFile] {
+  public func getAllModelInfo() async -> [MLXModelLoader.ModelFile] {
     await modelLoader.allModels()
   }
 
   /// Managed MLX model info for settings/onboarding.
-  public func getAllManagedModelInfo() async -> [WhisperModelLoader.ManagedModelFile] {
+  public func getAllManagedModelInfo() async -> [MLXModelLoader.ManagedModelFile] {
     let ids = MLXModelCatalog.descriptors.map(\.modelID)
     let names = Dictionary(uniqueKeysWithValues: MLXModelCatalog.descriptors.map { ($0.modelID, $0.cacheFileName) })
     return await modelLoader.allModels(modelIDs: ids, cacheFileNames: names)
@@ -248,7 +248,7 @@ public actor WhisperModelManager {
   // MARK: - Download
 
   /// Compatibility API: downloads profile-mapped MLX model.
-  public func downloadModel(_ model: WhisperModel) -> AsyncStream<ModelDownloadProgress> {
+  public func downloadModel(_ model: ASRModelProfile) -> AsyncStream<ModelDownloadProgress> {
     let modelID = MLXModelCatalog.modelID(for: model)
     return downloadModel(modelID)
   }
@@ -454,7 +454,7 @@ public actor WhisperModelManager {
 
   // MARK: - Cancellation
 
-  public func cancelDownload(_ model: WhisperModel) {
+  public func cancelDownload(_ model: ASRModelProfile) {
     cancelDownload(MLXModelCatalog.modelID(for: model))
   }
 
@@ -474,7 +474,7 @@ public actor WhisperModelManager {
   // MARK: - Validation
 
   /// Compatibility API for profile validation.
-  public func validateModel(_ model: WhisperModel) async -> Bool {
+  public func validateModel(_ model: ASRModelProfile) async -> Bool {
     let modelID = MLXModelCatalog.modelID(for: model)
     return await validateModelID(modelID)
   }
@@ -491,7 +491,7 @@ public actor WhisperModelManager {
     return descriptor.expectedSizeBytes.contains(size)
   }
 
-  public func removeModel(_ model: WhisperModel) async throws {
+  public func removeModel(_ model: ASRModelProfile) async throws {
     let modelID = MLXModelCatalog.modelID(for: model)
     try await removeModelID(modelID)
   }
