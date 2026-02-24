@@ -307,7 +307,10 @@ private struct OnboardingSettingsTab: View {
             .disabled(!appState.isMLXSupportedHardware)
           }
 
-          if appState.modelDownload.status == .failed || appState.modelDownload.status == .cancelled {
+          if appState.modelDownload.status == .failed
+            || appState.modelDownload.status == .validationFailed
+            || appState.modelDownload.status == .cancelled
+          {
             Button("Retry") {
               Task { @MainActor in
                 await appState.retryModelDownload()
@@ -359,6 +362,8 @@ private struct OnboardingSettingsTab: View {
       return "Ready"
     case .failed:
       return "Failed"
+    case .validationFailed:
+      return "Validation failed"
     case .cancelled:
       return "Cancelled"
     }
@@ -376,7 +381,7 @@ private struct OnboardingSettingsTab: View {
       return .blue
     case .completed:
       return .green
-    case .failed:
+    case .failed, .validationFailed:
       return .red
     case .cancelled:
       return .orange
