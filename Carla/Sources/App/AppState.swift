@@ -512,7 +512,7 @@ final class AppState: ObservableObject {
     modelDownload.status = .checking
     modelDownload.progressText = "Checking model availability..."
 
-    let modelsAvailable = await modelManager.areRequiredModelsAvailable()
+    let modelsAvailable = await areRequiredModelsReadyForOnboarding()
 
     if modelsAvailable {
       modelDownload.status = .completed
@@ -588,7 +588,7 @@ final class AppState: ObservableObject {
         let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
         guard isCurrentOperation else { return }
 
-        let allReady = await modelManager.areRequiredModelsAvailable()
+        let allReady = await self.areRequiredModelsReadyForOnboarding()
         await MainActor.run {
           guard self.downloadOperationID == operationID else { return }
           if allReady {
@@ -829,6 +829,15 @@ final class AppState: ObservableObject {
     #if canImport(Sparkle)
       updaterController?.checkForUpdates(nil)
     #endif
+  }
+
+  private func areRequiredModelsReadyForOnboarding() async -> Bool {
+    for modelID in MLXModelCatalog.requiredModelIDs {
+      guard await modelManager.validateModelID(modelID) else {
+        return false
+      }
+    }
+    return true
   }
 
   private static let isMLXSupportedHardware: Bool = {
