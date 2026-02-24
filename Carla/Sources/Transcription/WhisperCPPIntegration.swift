@@ -6,21 +6,20 @@ public protocol WhisperCPPBinding: Sendable {
   func transcribePCM(
     samples: [Float],
     sampleRate: Double,
-    model: WhisperModel,
-    languageHint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult
+    model: ASRModelProfile,
+    languageHint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult
 
   /// Performs transcription for a file-backed request.
   func transcribeFile(
     fileURL: URL,
-    model: WhisperModel,
-    languageHint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult
+    model: ASRModelProfile,
+    languageHint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult
 }
 
 /// Production-ready wrapper shape for whisper.cpp bindings.
-/// Replace `fatalError` stubs once C/C++ bridge is linked.
-public struct WhisperCPPEngine: WhisperTranscribingEngine {
+public struct WhisperCPPEngine: ASRTranscribingEngine {
   private let binding: WhisperCPPBinding
 
   public init(binding: WhisperCPPBinding) {
@@ -29,9 +28,9 @@ public struct WhisperCPPEngine: WhisperTranscribingEngine {
 
   public func transcribeStreamingChunk(
     _ chunk: AudioChunk,
-    model: WhisperModel,
-    languageHint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult {
+    model: ASRModelProfile,
+    languageHint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult {
     try await binding.transcribePCM(
       samples: chunk.samples,
       sampleRate: chunk.sampleRate,
@@ -42,9 +41,9 @@ public struct WhisperCPPEngine: WhisperTranscribingEngine {
 
   public func transcribeAudioFile(
     at fileURL: URL,
-    model: WhisperModel,
-    languageHint: WhisperLanguageHint?
-  ) async throws -> WhisperTranscriptionResult {
+    model: ASRModelProfile,
+    languageHint: ASRLanguageHint?
+  ) async throws -> ASRTranscriptionResult {
     try await binding.transcribeFile(fileURL: fileURL, model: model, languageHint: languageHint)
   }
 }

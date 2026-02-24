@@ -6,16 +6,16 @@ public enum TranscriptionTrackSource: Sendable, Equatable {
   case systemAudio
 }
 
-/// Whisper model tier used for a transcription pass.
-public enum WhisperModel: String, Sendable {
+/// Backend-neutral model profile used for a transcription pass.
+public enum ASRModelProfile: String, Sendable {
   case base
   case small
   case medium
   case large
 }
 
-/// Language hint strategy used for Whisper calls.
-public enum WhisperLanguageHint: Sendable, Equatable {
+/// Language hint strategy used for ASR calls.
+public enum ASRLanguageHint: Sendable, Equatable {
   case fixed(code: String)
   case autoDetect
 }
@@ -40,7 +40,7 @@ public struct AudioPacket: Sendable, Equatable {
   }
 }
 
-/// Chunk unit delivered to Whisper for realtime transcription.
+/// Chunk unit delivered to the ASR backend for realtime transcription.
 public struct AudioChunk: Sendable, Equatable {
   public let id: UUID
   public let startTime: TimeInterval
@@ -69,8 +69,8 @@ public struct AudioChunk: Sendable, Equatable {
   }
 }
 
-/// Native whisper segment, relative to the request-local audio input.
-public struct WhisperSegment: Sendable, Equatable {
+/// Backend-native segment, relative to request-local audio input.
+public struct ASRSegment: Sendable, Equatable {
   public let startTime: TimeInterval
   public let endTime: TimeInterval
   public let text: String
@@ -89,18 +89,18 @@ public struct WhisperSegment: Sendable, Equatable {
   }
 }
 
-/// Native whisper transcription output.
-public struct WhisperTranscriptionResult: Sendable, Equatable {
-  public let segments: [WhisperSegment]
+/// Backend-neutral transcription output.
+public struct ASRTranscriptionResult: Sendable, Equatable {
+  public let segments: [ASRSegment]
   public let detectedLanguageCode: String?
 
-  public init(segments: [WhisperSegment], detectedLanguageCode: String?) {
+  public init(segments: [ASRSegment], detectedLanguageCode: String?) {
     self.segments = segments
     self.detectedLanguageCode = detectedLanguageCode
   }
 }
 
-/// App-facing transcript segment mapped from whisper output.
+/// App-facing transcript segment mapped from backend output.
 public struct TranscriptSegment: Sendable, Equatable, Identifiable {
   public let id: UUID
   public let startTime: TimeInterval
@@ -152,3 +152,10 @@ public struct SpeakerMapper: Sendable {
     }
   }
 }
+
+// MARK: - Backward compatibility aliases
+
+public typealias WhisperModel = ASRModelProfile
+public typealias WhisperLanguageHint = ASRLanguageHint
+public typealias WhisperSegment = ASRSegment
+public typealias WhisperTranscriptionResult = ASRTranscriptionResult
