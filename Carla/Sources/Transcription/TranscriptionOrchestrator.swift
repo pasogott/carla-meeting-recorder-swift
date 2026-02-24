@@ -52,17 +52,29 @@ public actor TranscriptionJobOrchestrator {
     let startedUptime: TimeInterval
   }
 
+  private struct EngineCallOutcome: Sendable {
+    let result: ASRTranscriptionResult?
+    let error: Error?
+    let latencyMs: Double
+  }
+
   private let engine: ASRTranscribingEngine
+  private let shadowEngine: ASRTranscribingEngine?
+  private let shadowHarness: ShadowTranscriptionHarness?
   private let merger: TranscriptSegmentMerger
   private let metricsHook: ASRMetricsHook
   private var realtimeJobs: [UUID: RealtimeState] = [:]
 
   public init(
     engine: ASRTranscribingEngine,
+    shadowEngine: ASRTranscribingEngine? = nil,
+    shadowHarness: ShadowTranscriptionHarness? = nil,
     merger: TranscriptSegmentMerger = TranscriptSegmentMerger(),
     metricsHook: ASRMetricsHook = NoopASRMetricsHook()
   ) {
     self.engine = engine
+    self.shadowEngine = shadowEngine
+    self.shadowHarness = shadowHarness
     self.merger = merger
     self.metricsHook = metricsHook
   }
@@ -89,7 +101,7 @@ public actor TranscriptionJobOrchestrator {
     metricsHook.record(
       .queueBackpressure(operation: .streamChunk, queuedItems: chunks.count, droppedItems: 0))
 
-    let incoming = try await transcribeChunks(chunks, configuration: state.configuration)
+    let incoming = try await transcribeChunks(chunks, jobID: jobID, configuration: state.configuration)
     state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
     realtimeJobs[jobID] = state
     return state.mergedSegments
@@ -109,7 +121,7 @@ public actor TranscriptionJobOrchestrator {
     metricsHook.record(
       .queueBackpressure(operation: .finishRealtimeJob, queuedItems: chunks.count, droppedItems: 0))
 
-    let incoming = try await transcribeChunks(chunks, configuration: state.configuration)
+    let incoming = try await transcribeChunks(chunks, jobID: jobID, configuration: state.configuration)
     state.mergedSegments = merger.merge(existing: state.mergedSegments, incoming: incoming)
     realtimeJobs.removeValue(forKey: jobID)
 
@@ -134,10 +146,9 @@ public actor TranscriptionJobOrchestrator {
   {
     let hint = request.language.primaryHint()
     let response = try await transcribeFileWithFallback(
-      url: request.audioFileURL,
-      model: request.model,
-      language: request.language,
-      hint: hint
+      request: request,
+      hint: hint,
+      jobID: UUID()
     )
 
     return response.segments.map {
@@ -155,18 +166,22 @@ public actor TranscriptionJobOrchestrator {
 
   private func transcribeChunks(
     _ chunks: [AudioChunk],
+    jobID: UUID,
     configuration: RealtimeTranscriptionJobConfiguration
   ) async throws -> [TranscriptSegment] {
     guard !chunks.isEmpty else { return [] }
     var mapped: [TranscriptSegment] = []
 
-    for chunk in chunks {
+    for (index, chunk) in chunks.enumerated() {
       let hint = configuration.language.primaryHint()
       let response = try await transcribeChunkWithFallback(
         chunk,
         model: configuration.model,
         language: configuration.language,
-        hint: hint
+        hint: hint,
+        jobID: jobID,
+        queueDepth: chunks.count - index - 1,
+        droppedItems: 0
       )
 
       let newSegments = response.segments.map {
@@ -190,51 +205,338 @@ public actor TranscriptionJobOrchestrator {
     _ chunk: AudioChunk,
     model: ASRModelProfile,
     language: TranscriptionLanguageConfiguration,
-    hint: ASRLanguageHint?
+    hint: ASRLanguageHint?,
+    jobID: UUID,
+    queueDepth: Int,
+    droppedItems: Int
   ) async throws -> ASRTranscriptionResult {
-    let start = ProcessInfo.processInfo.systemUptime
-    do {
-      let result = try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
-      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-      metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: true))
-      return result
-    } catch {
-      guard let fallback = language.fallbackHint(after: error, previousHint: hint) else {
-        let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: false))
-        throw error
-      }
-      metricsHook.record(.retry(operation: .streamChunk, attempt: 2, reason: "language-fallback"))
-      let result = try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: fallback)
-      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-      metricsHook.record(.latency(operation: .streamChunk, durationMs: durationMs, success: true))
+    let requestMetadata = ShadowTranscriptionRequestMetadata(
+      jobID: jobID,
+      chunkID: chunk.id,
+      source: chunk.source,
+      model: model,
+      languageHint: hint,
+      queueDepth: queueDepth,
+      droppedItems: droppedItems,
+      audioFileName: nil
+    )
+
+    let requestStart = ProcessInfo.processInfo.systemUptime
+    let firstPrimary = await callPrimaryChunk(chunk, model: model, hint: hint)
+    let firstShadow = await callShadowChunk(chunk, model: model, hint: hint)
+
+    if let result = firstPrimary.result {
+      metricsHook.record(.latency(operation: .streamChunk, durationMs: firstPrimary.latencyMs, success: true))
+      await captureShadow(
+        operation: .streamChunk,
+        request: requestMetadata,
+        attempt: 1,
+        retried: false,
+        retryReason: nil,
+        primary: firstPrimary,
+        shadow: firstShadow,
+        requestStartUptime: requestStart
+      )
       return result
     }
+
+    guard let firstError = firstPrimary.error else {
+      throw ASREngineError.runtimeFailure("missing primary result and error")
+    }
+
+    guard let fallback = language.fallbackHint(after: firstError, previousHint: hint) else {
+      metricsHook.record(
+        .latency(operation: .streamChunk, durationMs: firstPrimary.latencyMs, success: false))
+      await captureShadow(
+        operation: .streamChunk,
+        request: requestMetadata,
+        attempt: 1,
+        retried: false,
+        retryReason: nil,
+        primary: firstPrimary,
+        shadow: firstShadow,
+        requestStartUptime: requestStart
+      )
+      throw firstError
+    }
+
+    metricsHook.record(.retry(operation: .streamChunk, attempt: 2, reason: "language-fallback"))
+    await captureShadow(
+      operation: .streamChunk,
+      request: requestMetadata,
+      attempt: 1,
+      retried: true,
+      retryReason: "language-fallback",
+      primary: firstPrimary,
+      shadow: firstShadow,
+      requestStartUptime: requestStart
+    )
+
+    let retryRequest = ShadowTranscriptionRequestMetadata(
+      jobID: jobID,
+      chunkID: chunk.id,
+      source: chunk.source,
+      model: model,
+      languageHint: fallback,
+      queueDepth: queueDepth,
+      droppedItems: droppedItems,
+      audioFileName: nil
+    )
+
+    let secondPrimary = await callPrimaryChunk(chunk, model: model, hint: fallback)
+    let secondShadow = await callShadowChunk(chunk, model: model, hint: fallback)
+
+    if let result = secondPrimary.result {
+      metricsHook.record(.latency(operation: .streamChunk, durationMs: secondPrimary.latencyMs, success: true))
+      await captureShadow(
+        operation: .streamChunk,
+        request: retryRequest,
+        attempt: 2,
+        retried: false,
+        retryReason: nil,
+        primary: secondPrimary,
+        shadow: secondShadow,
+        requestStartUptime: requestStart
+      )
+      return result
+    }
+
+    metricsHook.record(.latency(operation: .streamChunk, durationMs: secondPrimary.latencyMs, success: false))
+    await captureShadow(
+      operation: .streamChunk,
+      request: retryRequest,
+      attempt: 2,
+      retried: false,
+      retryReason: nil,
+      primary: secondPrimary,
+      shadow: secondShadow,
+      requestStartUptime: requestStart
+    )
+
+    throw secondPrimary.error ?? ASREngineError.runtimeFailure("unknown stream chunk failure")
   }
 
   private func transcribeFileWithFallback(
-    url: URL,
-    model: ASRModelProfile,
-    language: TranscriptionLanguageConfiguration,
-    hint: ASRLanguageHint?
+    request: PostRecordingPolishRequest,
+    hint: ASRLanguageHint?,
+    jobID: UUID
   ) async throws -> ASRTranscriptionResult {
-    let start = ProcessInfo.processInfo.systemUptime
-    do {
-      let result = try await engine.transcribeAudioFile(at: url, model: model, languageHint: hint)
-      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-      metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: true))
-      return result
-    } catch {
-      guard let fallback = language.fallbackHint(after: error, previousHint: hint) else {
-        let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: false))
-        throw error
-      }
-      metricsHook.record(.retry(operation: .transcribeFile, attempt: 2, reason: "language-fallback"))
-      let result = try await engine.transcribeAudioFile(at: url, model: model, languageHint: fallback)
-      let durationMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
-      metricsHook.record(.latency(operation: .transcribeFile, durationMs: durationMs, success: true))
+    let requestMetadata = ShadowTranscriptionRequestMetadata(
+      jobID: jobID,
+      chunkID: nil,
+      source: request.source,
+      model: request.model,
+      languageHint: hint,
+      queueDepth: 0,
+      droppedItems: 0,
+      audioFileName: request.audioFileURL.lastPathComponent
+    )
+
+    let requestStart = ProcessInfo.processInfo.systemUptime
+    let firstPrimary = await callPrimaryFile(request.audioFileURL, model: request.model, hint: hint)
+    let firstShadow = await callShadowFile(request.audioFileURL, model: request.model, hint: hint)
+
+    if let result = firstPrimary.result {
+      metricsHook.record(
+        .latency(operation: .transcribeFile, durationMs: firstPrimary.latencyMs, success: true))
+      await captureShadow(
+        operation: .transcribeFile,
+        request: requestMetadata,
+        attempt: 1,
+        retried: false,
+        retryReason: nil,
+        primary: firstPrimary,
+        shadow: firstShadow,
+        requestStartUptime: requestStart
+      )
       return result
     }
+
+    guard let firstError = firstPrimary.error else {
+      throw ASREngineError.runtimeFailure("missing primary result and error")
+    }
+
+    guard let fallback = request.language.fallbackHint(after: firstError, previousHint: hint) else {
+      metricsHook.record(
+        .latency(operation: .transcribeFile, durationMs: firstPrimary.latencyMs, success: false))
+      await captureShadow(
+        operation: .transcribeFile,
+        request: requestMetadata,
+        attempt: 1,
+        retried: false,
+        retryReason: nil,
+        primary: firstPrimary,
+        shadow: firstShadow,
+        requestStartUptime: requestStart
+      )
+      throw firstError
+    }
+
+    metricsHook.record(.retry(operation: .transcribeFile, attempt: 2, reason: "language-fallback"))
+    await captureShadow(
+      operation: .transcribeFile,
+      request: requestMetadata,
+      attempt: 1,
+      retried: true,
+      retryReason: "language-fallback",
+      primary: firstPrimary,
+      shadow: firstShadow,
+      requestStartUptime: requestStart
+    )
+
+    let retryRequest = ShadowTranscriptionRequestMetadata(
+      jobID: jobID,
+      chunkID: nil,
+      source: request.source,
+      model: request.model,
+      languageHint: fallback,
+      queueDepth: 0,
+      droppedItems: 0,
+      audioFileName: request.audioFileURL.lastPathComponent
+    )
+
+    let secondPrimary = await callPrimaryFile(request.audioFileURL, model: request.model, hint: fallback)
+    let secondShadow = await callShadowFile(request.audioFileURL, model: request.model, hint: fallback)
+
+    if let result = secondPrimary.result {
+      metricsHook.record(
+        .latency(operation: .transcribeFile, durationMs: secondPrimary.latencyMs, success: true))
+      await captureShadow(
+        operation: .transcribeFile,
+        request: retryRequest,
+        attempt: 2,
+        retried: false,
+        retryReason: nil,
+        primary: secondPrimary,
+        shadow: secondShadow,
+        requestStartUptime: requestStart
+      )
+      return result
+    }
+
+    metricsHook.record(
+      .latency(operation: .transcribeFile, durationMs: secondPrimary.latencyMs, success: false))
+    await captureShadow(
+      operation: .transcribeFile,
+      request: retryRequest,
+      attempt: 2,
+      retried: false,
+      retryReason: nil,
+      primary: secondPrimary,
+      shadow: secondShadow,
+      requestStartUptime: requestStart
+    )
+
+    throw secondPrimary.error ?? ASREngineError.runtimeFailure("unknown file transcription failure")
+  }
+
+  private func callPrimaryChunk(_ chunk: AudioChunk, model: ASRModelProfile, hint: ASRLanguageHint?) async
+    -> EngineCallOutcome
+  {
+    let started = ProcessInfo.processInfo.systemUptime
+    do {
+      let result = try await engine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
+      return EngineCallOutcome(
+        result: result,
+        error: nil,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    } catch {
+      return EngineCallOutcome(
+        result: nil,
+        error: error,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    }
+  }
+
+  private func callShadowChunk(_ chunk: AudioChunk, model: ASRModelProfile, hint: ASRLanguageHint?) async
+    -> EngineCallOutcome?
+  {
+    guard let shadowEngine else { return nil }
+    let started = ProcessInfo.processInfo.systemUptime
+    do {
+      let result = try await shadowEngine.transcribeStreamingChunk(chunk, model: model, languageHint: hint)
+      return EngineCallOutcome(
+        result: result,
+        error: nil,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    } catch {
+      return EngineCallOutcome(
+        result: nil,
+        error: error,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    }
+  }
+
+  private func callPrimaryFile(_ url: URL, model: ASRModelProfile, hint: ASRLanguageHint?) async
+    -> EngineCallOutcome
+  {
+    let started = ProcessInfo.processInfo.systemUptime
+    do {
+      let result = try await engine.transcribeAudioFile(at: url, model: model, languageHint: hint)
+      return EngineCallOutcome(
+        result: result,
+        error: nil,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    } catch {
+      return EngineCallOutcome(
+        result: nil,
+        error: error,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    }
+  }
+
+  private func callShadowFile(_ url: URL, model: ASRModelProfile, hint: ASRLanguageHint?) async
+    -> EngineCallOutcome?
+  {
+    guard let shadowEngine else { return nil }
+    let started = ProcessInfo.processInfo.systemUptime
+    do {
+      let result = try await shadowEngine.transcribeAudioFile(at: url, model: model, languageHint: hint)
+      return EngineCallOutcome(
+        result: result,
+        error: nil,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    } catch {
+      return EngineCallOutcome(
+        result: nil,
+        error: error,
+        latencyMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+      )
+    }
+  }
+
+  private func captureShadow(
+    operation: ShadowTranscriptionOperation,
+    request: ShadowTranscriptionRequestMetadata,
+    attempt: Int,
+    retried: Bool,
+    retryReason: String?,
+    primary: EngineCallOutcome,
+    shadow: EngineCallOutcome?,
+    requestStartUptime: TimeInterval
+  ) async {
+    guard let shadowHarness else { return }
+    await shadowHarness.capture(
+      ShadowTranscriptionAttemptCapture(
+        operation: operation,
+        request: request,
+        attempt: attempt,
+        retried: retried,
+        retryReason: retryReason,
+        primaryResult: primary.result,
+        shadowResult: shadow?.result,
+        primaryError: primary.error,
+        shadowError: shadow?.error,
+        primaryLatencyMs: primary.latencyMs,
+        shadowLatencyMs: shadow?.latencyMs,
+        endToEndLatencyMs: (ProcessInfo.processInfo.systemUptime - requestStartUptime) * 1000
+      ))
   }
 }
