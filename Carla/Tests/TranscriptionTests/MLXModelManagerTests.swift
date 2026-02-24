@@ -83,16 +83,16 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(available)
   }
 
-  func testAreRequiredModelsAvailableWhenRequiredMLXArtifactExists() async throws {
+  func testAreRequiredModelsUnavailableWhenChecksumIsMissingEvenIfArtifactExists() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
     )
-    try createFile(at: modelURL, size: descriptor.expectedSizeBytes.lowerBound)
+    try createFile(at: modelURL, size: 1024)
 
     let available = await modelManager.areRequiredModelsAvailable()
-    XCTAssertTrue(available)
+    XCTAssertFalse(available)
   }
 
   func testValidateModelReturnsFalseWhenWrongSize() async throws {
@@ -105,6 +105,16 @@ final class MLXModelManagerTests: XCTestCase {
 
     let valid = await modelManager.validateModel(.base)
     XCTAssertFalse(valid)
+  }
+
+  func testValidationErrorReturnsMissingChecksumTaxonomy() async {
+    let error = await modelManager.validationError(forModelID: "mlx-community/whisper-medium")
+    guard case .checksumMissing(let modelID, let relativePath)? = error else {
+      return XCTFail("Expected checksumMissing, got \(String(describing: error))")
+    }
+
+    XCTAssertEqual(modelID, "mlx-community/whisper-medium")
+    XCTAssertEqual(relativePath, "model.bin")
   }
 
   // MARK: - Legacy Cleanup Gating
@@ -122,13 +132,13 @@ final class MLXModelManagerTests: XCTestCase {
     XCTAssertFalse(isDirectory.boolValue)
   }
 
-  func testCleanupLegacyGGMLArtifactsRunsAfterMLXReadiness() async throws {
+  func testCleanupLegacyGGMLArtifactsDoesNotRunWhenArtifactExistsButChecksumMissing() async throws {
     let descriptor = try XCTUnwrap(MLXModelCatalog.descriptorByProfile[.medium])
     let modelURL = await modelLoader.modelFilePath(
       forModelID: descriptor.modelID,
       cacheFileName: descriptor.cacheFileName
     )
-    try createFile(at: modelURL, size: descriptor.expectedSizeBytes.lowerBound)
+    try createFile(at: modelURL, size: 4096)
 
     let legacyBase = await modelLoader.modelFilePath(for: .base)
     let legacySmall = await modelLoader.modelFilePath(for: .small)
@@ -137,9 +147,9 @@ final class MLXModelManagerTests: XCTestCase {
 
     let removed = try await modelManager.cleanupLegacyGGMLArtifactsIfReady()
 
-    XCTAssertEqual(Set(removed), Set([legacyBase, legacySmall]))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: legacyBase.path))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: legacySmall.path))
+    XCTAssertTrue(removed.isEmpty)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: legacyBase.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: legacySmall.path))
   }
 
   // MARK: - Download Progress
