@@ -58,66 +58,110 @@ public struct ModelDownloadProgress: Sendable, Equatable {
   }
 }
 
+/// Artifact contract entry for a required model file.
+public struct MLXModelArtifact: Sendable, Equatable {
+  public let relativePath: String
+  public let sourceURL: URL
+  public let checksumSHA256: String?
+
+  public init(relativePath: String, sourceURL: URL, checksumSHA256: String? = nil) {
+    self.relativePath = relativePath
+    self.sourceURL = sourceURL
+    self.checksumSHA256 = checksumSHA256
+  }
+}
+
+/// Human + machine-readable policy for a managed MLX model.
+public enum MLXModelPolicyTier: String, Sendable, Equatable {
+  case requiredDefault = "required_default"
+  case optionalQuality = "optional_quality"
+  case pressureFallback = "pressure_fallback"
+  case legacyCompatibility = "legacy_compatibility"
+}
+
 /// Catalog entry for a managed MLX model.
 public struct MLXModelDescriptor: Sendable, Equatable {
   public let profile: ASRModelProfile
   public let modelID: String
   public let displayName: String
+  public let policyTier: MLXModelPolicyTier
+  public let targetLanguageCodes: [String]
   public let cacheFileName: String
   public let downloadURL: URL
   public let expectedSizeBytes: ClosedRange<Int64>
+  public let requiredArtifacts: [MLXModelArtifact]
 
   public init(
     profile: ASRModelProfile,
     modelID: String,
     displayName: String,
+    policyTier: MLXModelPolicyTier,
+    targetLanguageCodes: [String],
     cacheFileName: String,
     downloadURL: URL,
-    expectedSizeBytes: ClosedRange<Int64>
+    expectedSizeBytes: ClosedRange<Int64>,
+    requiredArtifacts: [MLXModelArtifact]
   ) {
     self.profile = profile
     self.modelID = modelID
     self.displayName = displayName
+    self.policyTier = policyTier
+    self.targetLanguageCodes = targetLanguageCodes
     self.cacheFileName = cacheFileName
     self.downloadURL = downloadURL
     self.expectedSizeBytes = expectedSizeBytes
+    self.requiredArtifacts = requiredArtifacts
   }
 }
 
 /// Canonical MLX model catalog and legacy mapping helpers.
 public enum MLXModelCatalog {
+  public static let manifestVersion = "2026-02-24"
+
   public static let descriptors: [MLXModelDescriptor] = [
     MLXModelDescriptor(
       profile: .base,
       modelID: "mlx-community/whisper-base",
-      displayName: "Base (fastest)",
+      displayName: "Base (legacy compatibility)",
+      policyTier: .legacyCompatibility,
+      targetLanguageCodes: ["en", "de"],
       cacheFileName: "mlx-community--whisper-base.mlxmodel",
       downloadURL: URL(string: "https://huggingface.co/mlx-community/whisper-base/resolve/main/model.bin")!,
-      expectedSizeBytes: 120_000_000...180_000_000
+      expectedSizeBytes: 120_000_000...180_000_000,
+      requiredArtifacts: artifacts(for: "mlx-community/whisper-base")
     ),
     MLXModelDescriptor(
       profile: .small,
       modelID: "mlx-community/whisper-small",
-      displayName: "Small (balanced)",
+      displayName: "Small (pressure fallback)",
+      policyTier: .pressureFallback,
+      targetLanguageCodes: ["en", "de"],
       cacheFileName: "mlx-community--whisper-small.mlxmodel",
       downloadURL: URL(string: "https://huggingface.co/mlx-community/whisper-small/resolve/main/model.bin")!,
-      expectedSizeBytes: 380_000_000...600_000_000
+      expectedSizeBytes: 380_000_000...600_000_000,
+      requiredArtifacts: artifacts(for: "mlx-community/whisper-small")
     ),
     MLXModelDescriptor(
       profile: .medium,
       modelID: "mlx-community/whisper-medium",
-      displayName: "Medium (higher quality)",
+      displayName: "Medium (default)",
+      policyTier: .requiredDefault,
+      targetLanguageCodes: ["en", "de"],
       cacheFileName: "mlx-community--whisper-medium.mlxmodel",
       downloadURL: URL(string: "https://huggingface.co/mlx-community/whisper-medium/resolve/main/model.bin")!,
-      expectedSizeBytes: 1_100_000_000...1_900_000_000
+      expectedSizeBytes: 1_100_000_000...1_900_000_000,
+      requiredArtifacts: artifacts(for: "mlx-community/whisper-medium")
     ),
     MLXModelDescriptor(
       profile: .large,
       modelID: "mlx-community/whisper-large-v3",
-      displayName: "Large v3 (best quality)",
+      displayName: "Large v3 (optional quality)",
+      policyTier: .optionalQuality,
+      targetLanguageCodes: ["en", "de"],
       cacheFileName: "mlx-community--whisper-large-v3.mlxmodel",
       downloadURL: URL(string: "https://huggingface.co/mlx-community/whisper-large-v3/resolve/main/model.bin")!,
-      expectedSizeBytes: 2_100_000_000...4_200_000_000
+      expectedSizeBytes: 2_100_000_000...4_200_000_000,
+      requiredArtifacts: artifacts(for: "mlx-community/whisper-large-v3")
     ),
   ]
 
@@ -127,7 +171,7 @@ public enum MLXModelCatalog {
   public static let descriptorByID: [String: MLXModelDescriptor] =
     Dictionary(uniqueKeysWithValues: descriptors.map { ($0.modelID, $0) })
 
-  public static let requiredProfiles: [ASRModelProfile] = [.base]
+  public static let requiredProfiles: [ASRModelProfile] = [.medium]
 
   public static var requiredModelIDs: [String] {
     requiredProfiles.compactMap { descriptorByProfile[$0]?.modelID }
@@ -150,7 +194,7 @@ public enum MLXModelCatalog {
     if let descriptor = descriptorByID[normalized] {
       return descriptor.modelID
     }
-    return modelID(for: .base)
+    return modelID(for: .medium)
   }
 
   public static func profile(forSettingsValue rawValue: String) -> ASRModelProfile? {
@@ -158,7 +202,7 @@ public enum MLXModelCatalog {
 
     switch normalized {
     case "base":
-      return .base
+      return .medium
     case "small":
       return .small
     case "medium":
@@ -171,6 +215,20 @@ public enum MLXModelCatalog {
       }
       return nil
     }
+  }
+
+  private static func artifacts(for modelID: String) -> [MLXModelArtifact] {
+    let baseURL = "https://huggingface.co/\(modelID)/resolve/main"
+    return [
+      MLXModelArtifact(relativePath: "config.json", sourceURL: URL(string: "\(baseURL)/config.json")!),
+      MLXModelArtifact(relativePath: "generation_config.json", sourceURL: URL(string: "\(baseURL)/generation_config.json")!),
+      MLXModelArtifact(relativePath: "preprocessor_config.json", sourceURL: URL(string: "\(baseURL)/preprocessor_config.json")!),
+      MLXModelArtifact(relativePath: "tokenizer.json", sourceURL: URL(string: "\(baseURL)/tokenizer.json")!),
+      MLXModelArtifact(relativePath: "tokenizer_config.json", sourceURL: URL(string: "\(baseURL)/tokenizer_config.json")!),
+      MLXModelArtifact(relativePath: "vocab.json", sourceURL: URL(string: "\(baseURL)/vocab.json")!),
+      MLXModelArtifact(relativePath: "merges.txt", sourceURL: URL(string: "\(baseURL)/merges.txt")!),
+      MLXModelArtifact(relativePath: "model.bin", sourceURL: URL(string: "\(baseURL)/model.bin")!),
+    ]
   }
 }
 
@@ -190,9 +248,9 @@ public actor MLXModelManager {
     MLXModelCatalog.requiredProfiles
   }
 
-  /// Optional profiles for backward compatibility with existing UI model picker.
+  /// Optional profiles for quality/runtime policy selection.
   public static var optionalModels: [ASRModelProfile] {
-    [.small, .medium, .large]
+    [.small, .large]
   }
 
   public static var availableModels: [MLXModelDescriptor] {

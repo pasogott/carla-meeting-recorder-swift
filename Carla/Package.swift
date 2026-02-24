@@ -31,7 +31,10 @@ let package = Package(
         .target(
             name: "CarlaTranscription",
             dependencies: [],
-            path: "Sources/Transcription"
+            path: "Sources/Transcription",
+            exclude: [
+                "MLXModelArtifactManifest.json"
+            ]
         ),
         .target(
             name: "CarlaModels",
