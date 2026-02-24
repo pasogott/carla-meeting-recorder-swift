@@ -30,7 +30,7 @@ struct SettingsView: View {
       .tag(SettingsTab.audio)
 
       TranscriptionSettingsTab(
-        settings: $coordinator.settings,
+        appState: coordinator,
         models: modelOptions,
         languages: languages
       )
@@ -116,14 +116,14 @@ private struct AudioSettingsTab: View {
 }
 
 private struct TranscriptionSettingsTab: View {
-  @Binding var settings: AppSettings
+  @ObservedObject var appState: AppState
   let models: [MLXModelOption]
   let languages: [String]
 
   var body: some View {
     Form {
       Section("Model") {
-        Picker("MLX Model", selection: $settings.selectedModel) {
+        Picker("MLX Model", selection: $appState.settings.selectedModel) {
           ForEach(models) { model in
             Text(model.label).tag(model.id)
           }
@@ -135,8 +135,54 @@ private struct TranscriptionSettingsTab: View {
           .foregroundStyle(.secondary)
       }
 
+      Section("Model Files") {
+        HStack {
+          Text("Selected model")
+          Spacer()
+          Text(appState.isSelectedModelInstalled ? "Installed" : "Not installed")
+            .foregroundStyle(appState.isSelectedModelInstalled ? .green : .orange)
+        }
+
+        if appState.modelDownload.isDownloading {
+          ProgressView(value: appState.modelDownload.progress)
+            .progressViewStyle(.linear)
+        }
+
+        if !appState.modelDownload.progressText.isEmpty {
+          Text(appState.modelDownload.progressText)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
+        HStack {
+          Button("Download Selected") {
+            Task { @MainActor in
+              await appState.downloadSelectedModel()
+            }
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(!appState.isMLXSupportedHardware || appState.modelDownload.isDownloading)
+
+          Button("Delete Selected") {
+            Task { @MainActor in
+              await appState.removeSelectedModel()
+            }
+          }
+          .buttonStyle(.bordered)
+          .disabled(appState.modelDownload.isDownloading || !appState.isSelectedModelInstalled)
+
+          Button("Refresh") {
+            Task { @MainActor in
+              await appState.refreshInstalledModels()
+            }
+          }
+          .buttonStyle(.bordered)
+          .disabled(appState.modelDownload.isDownloading)
+        }
+      }
+
       Section("Language") {
-        Picker("Primary Language", selection: $settings.primaryLanguage) {
+        Picker("Primary Language", selection: $appState.settings.primaryLanguage) {
           ForEach(languages, id: \.self) { language in
             Text(languageLabel(language)).tag(language)
           }
@@ -150,6 +196,9 @@ private struct TranscriptionSettingsTab: View {
     }
     .formStyle(.grouped)
     .scrollDisabled(true)
+    .task {
+      await appState.refreshInstalledModels()
+    }
   }
 
   private func languageLabel(_ code: String) -> String {

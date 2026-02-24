@@ -167,6 +167,7 @@ final class AppState: ObservableObject {
   // MARK: - Model Download
 
   @Published var modelDownload = ModelDownloadState()
+  @Published var installedModelIDs: Set<String> = []
 
   // MARK: - Alerts
 
@@ -202,6 +203,7 @@ final class AppState: ObservableObject {
   private var coordinatorSegmentsTask: Task<Void, Never>?
   private var coordinatorLevelsTask: Task<Void, Never>?
   private var didAutoOpenSetupWindow = false
+  private var hasLoadedInstalledModels = false
 
   private enum DefaultsKey {
     static let onboardingCompleted = "at.cyberheld.carla.onboarding_completed"
@@ -382,6 +384,7 @@ final class AppState: ObservableObject {
 
     Task { [weak self] in
       guard let self else { return }
+      await self.refreshInstalledModels()
       await self.bootstrapRequiredModelsIfNeeded()
     }
 
@@ -523,15 +526,7 @@ final class AppState: ObservableObject {
   /// Checks if required MLX models are available locally.
   func checkModelAvailability() async {
     guard isMLXSupportedHardware else {
-      let guidance = MLXErrorUX.guidance(for: mlxUnsupportedMessage)
-      modelDownload.status = .failed
-      modelDownload.currentModel = nil
-      modelDownload.progress = 0
-      modelDownload.progressText = "Unavailable on Intel"
-      modelDownload.errorTitle = guidance.title
-      modelDownload.errorMessage = mlxUnsupportedMessage
-      modelDownload.recoverySuggestion = guidance.recovery
-      onboarding.modelsReady = false
+      applyMLXUnsupportedState()
       return
     }
 
@@ -541,7 +536,8 @@ final class AppState: ObservableObject {
     modelDownload.errorMessage = nil
     modelDownload.recoverySuggestion = nil
 
-    let modelsAvailable = await areRequiredModelsReadyForOnboarding()
+    await refreshInstalledModels()
+    let modelsAvailable = onboarding.modelsReady
 
     if modelsAvailable {
       modelDownload.status = .completed
@@ -570,15 +566,7 @@ final class AppState: ObservableObject {
   /// Downloads required MLX models with progress updates.
   func downloadRequiredModels() async {
     guard isMLXSupportedHardware else {
-      let guidance = MLXErrorUX.guidance(for: mlxUnsupportedMessage)
-      modelDownload.status = .failed
-      modelDownload.currentModel = nil
-      modelDownload.progress = 0
-      modelDownload.progressText = "Unavailable on Intel"
-      modelDownload.errorTitle = guidance.title
-      modelDownload.errorMessage = mlxUnsupportedMessage
-      modelDownload.recoverySuggestion = guidance.recovery
-      onboarding.modelsReady = false
+      applyMLXUnsupportedState()
       return
     }
 
@@ -632,7 +620,8 @@ final class AppState: ObservableObject {
         let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
         guard isCurrentOperation else { return }
 
-        let allReady = await self.areRequiredModelsReadyForOnboarding()
+        await self.refreshInstalledModels()
+        let allReady = self.onboarding.modelsReady
         let validationMessage = allReady
           ? nil
           : await self.firstRequiredModelValidationError()?.message
@@ -692,6 +681,173 @@ final class AppState: ObservableObject {
 
   func retryModelDownload() async {
     await downloadRequiredModels()
+  }
+
+  private func applyMLXUnsupportedState() {
+    let guidance = MLXErrorUX.guidance(for: mlxUnsupportedMessage)
+    modelDownload.status = .failed
+    modelDownload.currentModel = nil
+    modelDownload.progress = 0
+    modelDownload.progressText = "Unavailable on Intel"
+    modelDownload.errorTitle = guidance.title
+    modelDownload.errorMessage = mlxUnsupportedMessage
+    modelDownload.recoverySuggestion = guidance.recovery
+    onboarding.modelsReady = false
+  }
+
+  var selectedModelID: String {
+    Self.canonicalModelID(from: settings.selectedModel)
+  }
+
+  var isSelectedModelInstalled: Bool {
+    installedModelIDs.contains(selectedModelID)
+  }
+
+  func refreshInstalledModels() async {
+    var ready = Set<String>()
+    for descriptor in MLXModelCatalog.descriptors where descriptor.policyTier != .legacyCompatibility {
+      if await modelManager.validateModelID(descriptor.modelID) {
+        ready.insert(descriptor.modelID)
+      }
+    }
+    installedModelIDs = ready
+    hasLoadedInstalledModels = true
+    onboarding.modelsReady = MLXModelCatalog.requiredModelIDs.allSatisfy { ready.contains($0) }
+  }
+
+  func downloadSelectedModel() async {
+    guard isMLXSupportedHardware else {
+      applyMLXUnsupportedState()
+      return
+    }
+
+    let modelID = selectedModelID
+    downloadTask?.cancel()
+
+    let operationID = UUID()
+    downloadOperationID = operationID
+
+    modelDownload.status = .downloading
+    modelDownload.currentModel = nil
+    modelDownload.progress = 0
+    modelDownload.progressText = ""
+    modelDownload.errorTitle = nil
+    modelDownload.errorMessage = nil
+    modelDownload.recoverySuggestion = nil
+
+    downloadTask = Task {
+      let stream = await modelManager.downloadModel(modelID)
+      for await progress in stream {
+        if Task.isCancelled { break }
+        let isCurrentOperation = await MainActor.run { self.downloadOperationID == operationID }
+        if !isCurrentOperation { return }
+
+        if let error = progress.error {
+          let guidance = MLXErrorUX.guidance(for: error)
+          await MainActor.run {
+            guard self.downloadOperationID == operationID else { return }
+            modelDownload.status = .failed
+            modelDownload.errorTitle = guidance.title
+            modelDownload.errorMessage = error
+            modelDownload.recoverySuggestion = guidance.recovery
+            modelDownload.progressText = "Download failed"
+          }
+          return
+        }
+
+        await MainActor.run {
+          guard self.downloadOperationID == operationID else { return }
+          modelDownload.currentModel = progress.model
+          modelDownload.progress = progress.fractionComplete
+          modelDownload.progressText = progress.formattedProgress
+        }
+      }
+
+      if Task.isCancelled { return }
+      let valid = await self.modelManager.validateModelID(modelID)
+      await self.refreshInstalledModels()
+      if valid, self.selectedModelID == modelID {
+        await self.applyRecordingConfiguration(self.settings)
+      }
+
+      await MainActor.run {
+        guard self.downloadOperationID == operationID else { return }
+        if valid {
+          modelDownload.status = .completed
+          modelDownload.progress = 1
+          modelDownload.progressText = "Model ready"
+          modelDownload.currentModel = nil
+          modelDownload.errorTitle = nil
+          modelDownload.errorMessage = nil
+          modelDownload.recoverySuggestion = nil
+        } else {
+          let message = "Model validation failed after download. Delete and retry."
+          let guidance = MLXErrorUX.guidance(for: message)
+          modelDownload.status = .validationFailed
+          modelDownload.errorTitle = guidance.title
+          modelDownload.errorMessage = message
+          modelDownload.recoverySuggestion = guidance.recovery
+          modelDownload.progressText = "Validation failed"
+        }
+      }
+    }
+
+    let currentTask = downloadTask
+    await currentTask?.value
+
+    if downloadOperationID == operationID {
+      downloadTask = nil
+      downloadOperationID = nil
+    }
+  }
+
+  func removeSelectedModel() async {
+    let modelID = selectedModelID
+    let wasInstalled = installedModelIDs.contains(modelID)
+
+    do {
+      try await modelManager.removeModelID(modelID)
+      await refreshInstalledModels()
+
+      if let fallback = preferredInstalledModelID(excluding: modelID) {
+        settings.selectedModel = fallback
+        modelDownload.status = .idle
+        modelDownload.progress = 0
+        modelDownload.progressText = wasInstalled
+          ? "Model removed"
+          : "Model was not installed"
+        modelDownload.currentModel = nil
+        modelDownload.errorTitle = nil
+        modelDownload.errorMessage = nil
+        modelDownload.recoverySuggestion = nil
+      } else {
+        modelDownload.status = .validationFailed
+        modelDownload.progress = 0
+        modelDownload.progressText = "No model installed"
+        modelDownload.currentModel = nil
+        modelDownload.errorTitle = "Model not installed"
+        modelDownload.errorMessage = "No model is installed. Download a model to continue transcription."
+        modelDownload.recoverySuggestion = "Use 'Download Selected' in Transcription settings."
+      }
+    } catch {
+      let message = "Failed to remove model: \(error.localizedDescription)"
+      let guidance = MLXErrorUX.guidance(for: message)
+      modelDownload.status = .failed
+      modelDownload.errorTitle = guidance.title
+      modelDownload.errorMessage = message
+      modelDownload.recoverySuggestion = guidance.recovery
+    }
+  }
+
+  private func preferredInstalledModelID(excluding modelID: String) -> String? {
+    let candidates = AppState.availableMLXModels.map(\.id)
+    let filteredInstalled = candidates.filter { installedModelIDs.contains($0) && $0 != modelID }
+
+    if filteredInstalled.contains("mlx-community/whisper-medium") {
+      return "mlx-community/whisper-medium"
+    }
+
+    return filteredInstalled.first
   }
 
   // MARK: - Meeting Actions
@@ -910,10 +1066,6 @@ final class AppState: ObservableObject {
     #endif
   }
 
-  private func areRequiredModelsReadyForOnboarding() async -> Bool {
-    await firstRequiredModelValidationError() == nil
-  }
-
   private func firstRequiredModelValidationError() async -> MLXModelValidationError? {
     for modelID in MLXModelCatalog.requiredModelIDs {
       if let error = await modelManager.validationError(forModelID: modelID) {
@@ -1041,6 +1193,17 @@ final class AppState: ObservableObject {
         let normalized = Self.normalizedSettings(updatedSettings)
         if normalized != updatedSettings {
           self.settings = normalized
+          return
+        }
+
+        let selectedModelID = Self.canonicalModelID(from: normalized.selectedModel)
+        if hasLoadedInstalledModels, !installedModelIDs.contains(selectedModelID) {
+          if !modelDownload.isDownloading {
+            modelDownload.status = .validationFailed
+            modelDownload.errorTitle = "Model not installed"
+            modelDownload.errorMessage = "Selected model is not installed yet. Download it first."
+            modelDownload.recoverySuggestion = "Use 'Download Selected' in Transcription settings."
+          }
           return
         }
 
