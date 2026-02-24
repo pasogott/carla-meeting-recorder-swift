@@ -126,11 +126,6 @@ Optional environment flags:
 - `CARLA_ASR_BURN_IN_END` (ISO-8601 timestamp; disables shadow after this date)
 - `CARLA_ASR_ROLLBACK_ENABLE` (`1/true` disables burn-in shadow sampling)
 
-Validation script for release gates:
-```bash
-scripts/validate-asr-rollout.sh
-```
-
 ### Sparkle auto-updates
 Carla now includes Sparkle and exposes `Check for Updates…` in the menu.
 
