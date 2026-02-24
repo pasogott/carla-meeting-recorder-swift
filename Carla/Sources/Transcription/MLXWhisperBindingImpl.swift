@@ -26,6 +26,114 @@ protocol MLXWhisperRuntime: Sendable {
   func transcribe(_ request: MLXRuntimeTranscriptionRequest) async throws -> MLXRuntimeTranscription
 }
 
+struct MLXBundledRuntimePaths: Sendable {
+  let rootDirectory: URL
+  let pythonExecutable: URL
+  let sitePackagesDirectory: URL
+}
+
+protocol MLXBundledRuntimePathResolving: Sendable {
+  func resolve() throws -> MLXBundledRuntimePaths
+}
+
+struct MLXBundledRuntimePathResolver: MLXBundledRuntimePathResolving {
+  static let runtimeRootEnvironmentKey = "CARLA_MLX_RUNTIME_ROOT"
+
+  private let environment: [String: String]
+  private let bundleResourceURL: URL?
+
+  init(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    bundleResourceURL: URL? = Bundle.main.resourceURL
+  ) {
+    self.environment = environment
+    self.bundleResourceURL = bundleResourceURL
+  }
+
+  func resolve() throws -> MLXBundledRuntimePaths {
+    let candidateRoots = runtimeRootCandidates()
+
+    guard !candidateRoots.isEmpty else {
+      throw MLXWhisperLibraryError.runtimeFailure(
+        "missing bundled MLX runtime assets: no runtime root candidates available; expected env \(Self.runtimeRootEnvironmentKey) or app resource MLXRuntime/"
+      )
+    }
+
+    guard let runtimeRoot = candidateRoots.first(where: { isDirectory(at: $0) }) else {
+      let expected = candidateRoots.map(\.path).joined(separator: ", ")
+      throw MLXWhisperLibraryError.runtimeFailure(
+        "missing bundled MLX runtime assets: runtime root not found. checked [\(expected)]"
+      )
+    }
+
+    let pythonExecutable = runtimeRoot
+      .appendingPathComponent("python", isDirectory: true)
+      .appendingPathComponent("bin", isDirectory: true)
+      .appendingPathComponent("python3", isDirectory: false)
+
+    let sitePackagesDirectory = runtimeRoot.appendingPathComponent("site-packages", isDirectory: true)
+    let mlxWhisperPackage = sitePackagesDirectory.appendingPathComponent("mlx_whisper", isDirectory: true)
+
+    var missing: [String] = []
+    if !FileManager.default.fileExists(atPath: pythonExecutable.path) {
+      missing.append("python executable at \(pythonExecutable.path)")
+    } else if !FileManager.default.isExecutableFile(atPath: pythonExecutable.path) {
+      missing.append("python executable is not executable at \(pythonExecutable.path)")
+    }
+
+    if !isDirectory(at: sitePackagesDirectory) {
+      missing.append("site-packages directory at \(sitePackagesDirectory.path)")
+    }
+
+    if !isDirectory(at: mlxWhisperPackage) {
+      missing.append("mlx_whisper package directory at \(mlxWhisperPackage.path)")
+    }
+
+    if !missing.isEmpty {
+      throw MLXWhisperLibraryError.runtimeFailure(
+        "missing bundled MLX runtime assets in \(runtimeRoot.path): \(missing.joined(separator: "; "))"
+      )
+    }
+
+    return MLXBundledRuntimePaths(
+      rootDirectory: runtimeRoot,
+      pythonExecutable: pythonExecutable,
+      sitePackagesDirectory: sitePackagesDirectory
+    )
+  }
+
+  private func runtimeRootCandidates() -> [URL] {
+    var candidates: [URL] = []
+
+    if let envPath = environment[Self.runtimeRootEnvironmentKey], !envPath.isEmpty {
+      candidates.append(URL(fileURLWithPath: envPath, isDirectory: true))
+    }
+
+    if let bundleResourceURL {
+      candidates.append(bundleResourceURL.appendingPathComponent("MLXRuntime", isDirectory: true))
+    }
+
+    var unique: [URL] = []
+    var seen = Set<String>()
+    for candidate in candidates {
+      let standardized = candidate.standardizedFileURL
+      let key = standardized.path
+      if !seen.contains(key) {
+        seen.insert(key)
+        unique.append(standardized)
+      }
+    }
+
+    return unique
+  }
+
+  private func isDirectory(at url: URL) -> Bool {
+    var isDirectory = ObjCBool(false)
+    let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+    return exists && isDirectory.boolValue
+  }
+}
+
 /// Python-backed runtime adapter that executes mlx-whisper inference.
 struct MLXPythonWhisperRuntime: MLXWhisperRuntime {
   private struct RuntimeOutput: Decodable {
@@ -49,7 +157,15 @@ struct MLXPythonWhisperRuntime: MLXWhisperRuntime {
     let segments: [Segment]?
   }
 
+  private let pathResolver: any MLXBundledRuntimePathResolving
+
+  init(pathResolver: any MLXBundledRuntimePathResolving = MLXBundledRuntimePathResolver()) {
+    self.pathResolver = pathResolver
+  }
+
   func transcribe(_ request: MLXRuntimeTranscriptionRequest) async throws -> MLXRuntimeTranscription {
+    let paths = try pathResolver.resolve()
+
     let script = #"""
 import json
 import sys
@@ -100,10 +216,11 @@ print(json.dumps({
 """#
 
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.executableURL = paths.pythonExecutable
 
     let language = request.languageCode ?? ""
-    process.arguments = ["python3", "-c", script, request.audioFileURL.path, request.modelID, language]
+    process.arguments = ["-c", script, request.audioFileURL.path, request.modelID, language]
+    process.environment = makeRuntimeEnvironment(sitePackagesDirectory: paths.sitePackagesDirectory)
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -114,7 +231,9 @@ print(json.dumps({
       try process.run()
       process.waitUntilExit()
     } catch {
-      throw MLXWhisperLibraryError.runtimeFailure("failed to start mlx python runtime: \(error.localizedDescription)")
+      throw MLXWhisperLibraryError.runtimeFailure(
+        "failed to start bundled mlx python runtime at \(paths.pythonExecutable.path): \(error.localizedDescription)"
+      )
     }
 
     let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -124,7 +243,9 @@ print(json.dumps({
 
     guard process.terminationStatus == 0 else {
       if process.terminationStatus == 90 {
-        throw MLXWhisperLibraryError.runtimeFailure("mlx_whisper python package is unavailable")
+        throw MLXWhisperLibraryError.runtimeFailure(
+          "bundled mlx_whisper python package is unavailable in \(paths.sitePackagesDirectory.path)"
+        )
       }
       let message = stderr.isEmpty ? stdout : stderr
       throw MLXWhisperLibraryError.libraryFailure(code: Int(process.terminationStatus), message: message)
@@ -151,6 +272,22 @@ print(json.dumps({
     }
 
     return MLXRuntimeTranscription(detectedLanguageCode: decoded.language, segments: segments)
+  }
+
+  private func makeRuntimeEnvironment(sitePackagesDirectory: URL) -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    let existingPythonPath = environment["PYTHONPATH"]
+
+    if let existingPythonPath, !existingPythonPath.isEmpty {
+      environment["PYTHONPATH"] = "\(sitePackagesDirectory.path):\(existingPythonPath)"
+    } else {
+      environment["PYTHONPATH"] = sitePackagesDirectory.path
+    }
+
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    return environment
   }
 }
 
